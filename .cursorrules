@@ -1,0 +1,124 @@
+# Securely Server Support Components Monorepo
+
+This monorepo contains support crates for the Securely server, with most components being inspired by Laravel's elegant interfaces and architecture. Each crate aims to provide a Rust-native implementation of Laravel's well-established patterns while embracing Rust's strengths in concurrency and type safety.
+
+## Design Principles
+1. **Laravel-Inspired Interfaces**: Each crate should closely mirror its Laravel counterpart's interface where applicable
+2. **Single Responsibility**: Crates should be focused and cohesive, handling one core concern well
+3. **Strong Interfaces**: Public APIs should be well-documented, intuitive, and thorough
+4. **Rust-Native**: While following Laravel patterns, implementations should leverage Rust's unique features:
+   - Ownership and borrowing for memory safety
+   - Trait system for flexible interfaces
+   - Async/await for concurrent operations
+   - Type system for compile-time guarantees
+5. **Comprehensive Testing**: Each crate must include:
+   - Unit tests for all public interfaces
+   - Integration tests for Laravel-equivalent functionality
+   - Documentation tests for usage examples
+   - Benchmarks for performance-critical paths
+
+## Project Structure
+/
+├── crates/                    # All crates live here
+│   ├── store/                # Storage abstraction layer
+│   │   ├── src/             # Source code
+│   │   ├── tests/           # Integration tests
+│   │   └── Cargo.toml       # Store crate manifest
+│   │
+│   ├── settings/            # Settings management CLI
+│   │   ├── src/            # Source code
+│   │   ├── tests/          # Integration tests
+│   │   └── Cargo.toml      # Settings crate manifest
+│   │
+│   ├── workflows/          # Workflow engine and CLI
+│   │   ├── src/           # Source code
+│   │   ├── tests/         # Integration tests
+│   │   └── Cargo.toml     # Workflows crate manifest
+│   │
+│   └── testing/            # Testing utilities
+│       ├── src/            # Source code
+│       └── Cargo.toml      # Testing crate manifest
+│
+└── Cargo.toml               # Workspace manifest
+
+## Important Notes
+1. Each crate is independent but may have dependencies on other workspace crates
+2. When running commands:
+   - Use `cargo test -p <crate-name>` to test specific crates
+   - Use `cargo test --all` to test all crates
+   - Always run commands from the workspace root unless specifically working in a crate
+3. Dependencies:
+   - Add crate-specific dependencies to the crate's own Cargo.toml
+   - Add workspace-wide settings to the root Cargo.toml
+4. Current Crates:
+   - settings: Secure settings management CLI
+   - store: Storage abstraction layer
+   - workflows: Workflow engine and CLI
+   - testing: Testing utilities
+
+## Settings: ./crates/settings/
+The settings crate provides a secure CLI tool for managing application settings with:
+- Environment variable management
+- Encrypted secrets using AES-256-CBC
+- Server update hooks
+- Hierarchical visualization
+
+## Laravel Component Equivalents
+Current and planned crates with their Laravel counterparts:
+
+| Crate Name | Laravel Component | Status | Description |
+|------------|------------------|---------|-------------|
+| securely:settings | Settings | Active | Secure settings management CLI for runtime settings with api's for each set of settings generated for admin/control panel api in securely to change settings while securely server is running |
+| securely:config   | Config           | Active  | Configuration management with dot notation, env overrides, and encryption |
+| securely:store      | Cache           | Active  | Storage abstraction with multiple backends |
+| securely:workflows  | Workflow        | Active  | Comprehensive workflow engine with CLI, activity handlers, and async execution |
+| securely:queue      | Queue           | Planned | Async job queuing and processing |
+| securely:events     | Events          | Planned | Event dispatching and handling |
+| securely:log        | Log             | Planned | Structured logging with multiple channels |
+| securely:mail       | Mail            | Planned | Email composition and delivery |
+| securely:validation | Validation      | Planned | Data validation and sanitization |
+| securely:schedule   | Schedule        | Planned | Task scheduling and cron management |
+
+Each crate maintains Laravel's interface patterns while implementing Rust-specific optimizations and safety features.
+
+## Implementation Guidelines
+
+1. **Interface First**: Design the public API before implementation, ensuring it matches Laravel's interface patterns while being idiomatic Rust
+2. **Documentation**: Every public item must have comprehensive documentation with examples
+3. **Error Handling**: Use custom error types with thiserror, providing clear context and recovery options
+4. **Async Support**: Design for async from the start, using tokio as the runtime
+5. **Testing**:
+   - Unit tests for all public interfaces
+   - Integration tests comparing behavior with Laravel
+   - Benchmarks for performance-critical paths
+   - Documentation tests to verify examples
+6. **Dependencies**:
+   - Keep dependencies minimal and justified
+   - Prefer standard library solutions where possible
+   - Use workspace dependencies for cross-crate functionality
+
+## Development Workflow
+
+1. **Starting a New Feature**:
+   - Create feature branch from main
+   - Update relevant crate's Cargo.toml if needed
+   - Implement tests first
+   - Document as you go
+
+2. **Code Organization**:
+   - Keep modules focused and cohesive
+   - Use internal modules for implementation details
+   - Expose a clean, well-documented public API
+   - Follow Rust naming conventions
+
+3. **Testing Strategy**:
+   - Unit tests alongside code
+   - Integration tests in tests/
+   - Benchmarks in benches/
+   - Use testing utilities from testing crate
+
+4. **Documentation**:
+   - README.md in each crate root
+   - Rustdoc for all public items
+   - Examples in docs/
+   - Update .cursorrules when adding features

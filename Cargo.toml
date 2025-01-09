@@ -1,0 +1,10 @@
+[workspace]
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/find-how/support"
+documentation = "https://docs.rs/support"
+homepage = "https://github.com/find-how/support"
