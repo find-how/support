@@ -1,12 +1,10 @@
 use std::env;
-use std::path::PathBuf;
 use std::sync::Arc;
 use sled::Db;
 use thiserror::Error;
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
-use lazy_static::lazy_static;
-use std::sync::Mutex;
+use encrypt::Crypt;
 
 #[derive(Debug, Error)]
 pub enum Error {
@@ -14,14 +12,8 @@ pub enum Error {
     Database(#[from] sled::Error),
     #[error("Serialization error: {0}")]
     Serialization(#[from] serde_json::Error),
-    #[error("Missing encryption key")]
-    MissingKey,
-    #[error("Encryption error")]
-    Encryption,
-    #[error("Decryption error")]
-    Decryption,
-    #[error("Invalid key format")]
-    InvalidKeyFormat,
+    #[error("Encryption error: {0}")]
+    Encryption(#[from] encrypt::Error),
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
     #[error("Value not found")]
@@ -29,11 +21,6 @@ pub enum Error {
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
-
-lazy_static! {
-    static ref ENCRYPTION_KEY: Mutex<Vec<u8>> = Mutex::new(vec![0u8; 32]);
-    static ref ENCRYPTION_IV: Mutex<Vec<u8>> = Mutex::new(vec![0u8; 16]);
-}
 
 /// The main Settings facade
 pub struct Settings {
@@ -59,8 +46,8 @@ impl Settings {
     pub fn get<T: DeserializeOwned>(&self, key: &str) -> Result<Option<T>> {
         match self.db.get(key.as_bytes())? {
             Some(bytes) => {
-                let decrypted = decrypt_value(&String::from_utf8_lossy(&bytes))?;
-                let value = serde_json::from_slice(&decrypted)?;
+                let decrypted = Crypt::decrypt_string(&String::from_utf8_lossy(&bytes))?;
+                let value = serde_json::from_str(&decrypted)?;
                 Ok(Some(value))
             }
             None => Ok(None),
@@ -69,8 +56,8 @@ impl Settings {
 
     /// Set a value by key
     pub fn set<T: Serialize>(&self, key: &str, value: T) -> Result<()> {
-        let json = serde_json::to_vec(&value)?;
-        let encrypted = encrypt_value(&json)?;
+        let json = serde_json::to_string(&value)?;
+        let encrypted = Crypt::encrypt_string(&json)?;
         self.db.insert(key.as_bytes(), encrypted.as_bytes())?;
         Ok(())
     }
@@ -115,23 +102,12 @@ impl Settings {
                 }
             }
 
-            let decrypted = decrypt_value(&String::from_utf8_lossy(&value))?;
-            let value: Value = serde_json::from_slice(&decrypted)?;
+            let decrypted = Crypt::decrypt_string(&String::from_utf8_lossy(&value))?;
+            let value: Value = serde_json::from_str(&decrypted)?;
             settings.push((key_str, value));
         }
         Ok(settings)
     }
-}
-
-// Helper functions for encryption/decryption
-fn encrypt_value(value: &[u8]) -> Result<String> {
-    // Implementation using AES-256-CBC
-    todo!("Implement encryption")
-}
-
-fn decrypt_value(encrypted: &str) -> Result<Vec<u8>> {
-    // Implementation using AES-256-CBC
-    todo!("Implement decryption")
 }
 
 #[cfg(test)]
@@ -139,6 +115,11 @@ mod tests {
     use super::*;
     use serde::{Deserialize, Serialize};
     use tempfile::tempdir;
+
+    fn setup_test_encryption() {
+        env::set_var("APP_KEY", "base64:dGVzdGtleXRlc3RrZXl0ZXN0a2V5dGVzdGtleXRlc3Q=");
+        Crypt::initialize().unwrap();
+    }
 
     #[derive(Debug, Serialize, Deserialize, PartialEq)]
     struct Config {
@@ -148,6 +129,7 @@ mod tests {
 
     #[test]
     fn test_basic_operations() -> Result<()> {
+        setup_test_encryption();
         let dir = tempdir()?;
         let db = sled::open(dir.path())?;
         let settings = Settings::driver(db);
@@ -169,6 +151,7 @@ mod tests {
 
     #[test]
     fn test_json_values() -> Result<()> {
+        setup_test_encryption();
         let dir = tempdir()?;
         let db = sled::open(dir.path())?;
         let settings = Settings::driver(db);
@@ -187,6 +170,7 @@ mod tests {
 
     #[test]
     fn test_env_values() -> Result<()> {
+        setup_test_encryption();
         let settings = Settings::new()?;
 
         env::set_var("TEST_KEY", "\"test value\"");

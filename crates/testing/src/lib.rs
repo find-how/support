@@ -57,6 +57,7 @@
 
 pub mod store;
 pub mod settings;
+pub mod encrypt;
 
 pub use store::{
     bench::{bench_store, BenchConfig, BenchData},
@@ -67,6 +68,7 @@ pub use store::{
 };
 
 pub use settings::SettingsTestHelper;
+pub use encrypt::EncryptTestHelper;
 
 /// A test runtime for async tests
 pub struct TestRuntime;
