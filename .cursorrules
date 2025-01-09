@@ -68,16 +68,16 @@ Current and planned crates with their Laravel counterparts:
 
 | Crate Name | Laravel Component | Status | Description |
 |------------|------------------|---------|-------------|
-| securely:settings | Settings | Active | Secure settings management CLI for runtime settings with api's for each set of settings generated for admin/control panel api in securely to change settings while securely server is running |
-| securely:config   | Config           | Active  | Configuration management with dot notation, env overrides, and encryption |
-| securely:store      | Cache           | Active  | Storage abstraction with multiple backends |
-| securely:workflows  | Workflow        | Active  | Comprehensive workflow engine with CLI, activity handlers, and async execution |
-| securely:queue      | Queue           | Planned | Async job queuing and processing |
-| securely:events     | Events          | Planned | Event dispatching and handling |
-| securely:log        | Log             | Planned | Structured logging with multiple channels |
-| securely:mail       | Mail            | Planned | Email composition and delivery |
-| securely:validation | Validation      | Planned | Data validation and sanitization |
-| securely:schedule   | Schedule        | Planned | Task scheduling and cron management |
+| securely settings:get|set|has|all | Settings | Active | Secure settings management CLI for runtime settings with api's for each set of settings generated for admin/control panel api in securely to change settings while securely server is running |
+| securely config:{}   | Config           | Active  | Configuration management with dot notation, env overrides, and encryption |
+| securely store:{}      | Cache           | Active  | Storage abstraction with multiple backends |
+| securely workflows:{}  | Workflow        | Active  | Comprehensive workflow engine with CLI, activity handlers, and async execution |
+| securely queue:{}      | Queue           | Planned | Async job queuing and processing |
+| securely events:{}     | Events          | Planned | Event dispatching and handling |
+| securely log:{}        | Log             | Planned | Structured logging with multiple channels |
+| securely mail:{}       | Mail            | Planned | Email composition and delivery |
+| securely validation:{} | Validation      | Planned | Data validation and sanitization |
+| securely schedule:{}   | Schedule        | Planned | Task scheduling and cron management |
 
 Each crate maintains Laravel's interface patterns while implementing Rust-specific optimizations and safety features.
 

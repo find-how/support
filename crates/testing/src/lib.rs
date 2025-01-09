@@ -56,6 +56,7 @@
 //! - Core Types: [`TempStoreDir`], [`TestStore`], [`StoreTestContext`]
 
 pub mod store;
+pub mod settings;
 
 pub use store::{
     bench::{bench_store, BenchConfig, BenchData},
@@ -64,6 +65,8 @@ pub use store::{
     stress::{stress_test, StressConfig, StressResults},
     TempStoreDir, TestStore, StoreTestContext,
 };
+
+pub use settings::SettingsTestHelper;
 
 /// A test runtime for async tests
 pub struct TestRuntime;

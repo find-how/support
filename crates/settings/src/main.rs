@@ -434,3 +434,87 @@ fn interactive_mode(db: &Db) {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use assert_fs::prelude::*;
+
+    fn setup_encryption() {
+        let key = [1u8; 32];
+        let iv = [2u8; 16];
+        *ENCRYPTION_KEY.lock().unwrap() = key.to_vec();
+        *ENCRYPTION_IV.lock().unwrap() = iv.to_vec();
+    }
+
+    #[test]
+    fn test_encryption_roundtrip() {
+        setup_encryption();
+        let original = "test value";
+        let encrypted = encrypt_value(original.as_bytes()).unwrap();
+        let decrypted = decrypt_value(&encrypted).unwrap();
+        assert_eq!(String::from_utf8_lossy(&decrypted), original);
+    }
+
+    #[test]
+    fn test_db_operations() {
+        setup_encryption();
+        let temp = assert_fs::TempDir::new().unwrap();
+        let db = sled::open(temp.path()).unwrap();
+
+        // Test set and get
+        set_setting(&db, "test.key", "test value").unwrap();
+        let value = get_setting(&db, "test.key").unwrap().unwrap();
+        assert_eq!(value.trim(), "\"test value\"");
+
+        // Test delete
+        delete_setting(&db, "test.key").unwrap();
+        assert!(get_setting(&db, "test.key").unwrap().is_none());
+    }
+
+    #[test]
+    fn test_json_handling() {
+        setup_encryption();
+        let temp = assert_fs::TempDir::new().unwrap();
+        let db = sled::open(temp.path()).unwrap();
+
+        // Test JSON object
+        let json = r#"{"name": "test", "value": 123}"#;
+        set_setting(&db, "test.json", json).unwrap();
+        let value = get_setting(&db, "test.json").unwrap().unwrap();
+
+        // Parse both to compare
+        let original: Value = serde_json::from_str(json).unwrap();
+        let stored: Value = serde_json::from_str(&value).unwrap();
+        assert_eq!(original, stored);
+    }
+
+    #[test]
+    fn test_backup_restore() {
+        setup_encryption();
+        let temp = assert_fs::TempDir::new().unwrap();
+        let db = sled::open(temp.path()).unwrap();
+        let backup_file = temp.child("backup.dat");
+
+        // Set some values
+        set_setting(&db, "test.key1", "value1").unwrap();
+        set_setting(&db, "test.key2", "value2").unwrap();
+
+        // Backup
+        backup_settings(&db, backup_file.path().to_str().unwrap()).unwrap();
+
+        // Clear and restore
+        db.clear().unwrap();
+        restore_settings(&db, backup_file.path().to_str().unwrap()).unwrap();
+
+        // Verify values
+        assert_eq!(
+            get_setting(&db, "test.key1").unwrap().unwrap().trim(),
+            "\"value1\""
+        );
+        assert_eq!(
+            get_setting(&db, "test.key2").unwrap().unwrap().trim(),
+            "\"value2\""
+        );
+    }
+}
