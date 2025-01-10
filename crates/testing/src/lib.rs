@@ -60,15 +60,13 @@ pub mod settings;
 pub mod encrypt;
 
 pub use store::{
-    bench::{bench_store, BenchConfig, BenchData},
-    edge::{run_edge_cases, EdgeCase, EdgeCaseConfig, EdgeCaseResults},
-    property::{test_kv_strategy, test_kvs_strategy, test_batch_ops_strategy, test_range_strategy, TestKeyValue, TestBatchOp, TestRange, TestStoreState},
-    stress::{stress_test, StressConfig, StressResults},
-    TempStoreDir, TestStore, StoreTestContext,
+    bench::{bench_store, BenchConfig},
+    property::{test_kv_strategy, test_kvs_strategy, test_batch_ops_strategy, test_range_strategy},
+    stress::stress_test,
 };
 
-pub use settings::SettingsTestHelper;
-pub use encrypt::EncryptTestHelper;
+pub use settings::setup_test_settings;
+pub use encrypt::setup_test_encryption;
 
 /// A test runtime for async tests
 pub struct TestRuntime;

@@ -43,8 +43,22 @@ pub mod edge;
 pub mod property;
 pub mod stress;
 
+use bytes::Bytes;
+use std::result::Result;
 use std::path::PathBuf;
 use tempfile::TempDir;
+
+#[async_trait::async_trait]
+pub trait TestStore: Clone + Send + Sync + 'static {
+    fn new_test_store() -> Self;
+
+    async fn get(&self, key: &[u8]) -> Result<Option<Bytes>, Box<dyn std::error::Error>>;
+    async fn set(&self, key: &[u8], value: Bytes) -> Result<(), Box<dyn std::error::Error>>;
+    async fn delete(&self, key: &[u8]) -> Result<(), Box<dyn std::error::Error>>;
+    async fn batch_set(&self, kvs: Vec<(Vec<u8>, Bytes)>) -> Result<(), Box<dyn std::error::Error>>;
+    async fn batch_delete(&self, keys: Vec<Vec<u8>>) -> Result<(), Box<dyn std::error::Error>>;
+    async fn range(&self, range: std::ops::Range<&[u8]>) -> Result<Vec<(Vec<u8>, Bytes)>, Box<dyn std::error::Error>>;
+}
 
 /// A temporary directory for store tests.
 ///
@@ -86,36 +100,6 @@ impl Default for TempStoreDir {
     fn default() -> Self {
         Self::new()
     }
-}
-
-/// A trait for creating test store instances.
-///
-/// This trait should be implemented by store types to provide a standard way
-/// of creating test instances. The test instance should be configured appropriately
-/// for testing, possibly using a temporary directory.
-///
-/// # Example
-///
-/// ```rust,no_run
-/// use testing::store::TestStore;
-///
-/// #[derive(Clone)]
-/// struct MyStore;
-///
-/// impl TestStore for MyStore {
-///     fn new_test_store() -> Self {
-///         // Create a new test instance
-///         MyStore
-///     }
-/// }
-/// ```
-pub trait TestStore: Clone + Send + Sync + 'static {
-    /// Creates a new test store instance.
-    ///
-    /// This method should create a new store instance configured appropriately
-    /// for testing. The instance should be isolated from other test instances
-    /// to prevent interference.
-    fn new_test_store() -> Self;
 }
 
 /// A test context for store tests.

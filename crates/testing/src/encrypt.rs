@@ -1,64 +1,36 @@
+use std::env;
 use std::sync::Once;
+use base64::{Engine, engine::general_purpose::STANDARD};
+use rand::RngCore;
 
 static INIT: Once = Once::new();
 
-/// Helper struct for encryption testing
-pub struct EncryptTestHelper;
+pub fn setup_test_encryption() {
+    INIT.call_once(|| {
+        // Generate a random 32-byte key
+        let mut key = [0u8; 32];
+        let mut iv = [0u8; 16];
+        rand::thread_rng().fill_bytes(&mut key);
+        rand::thread_rng().fill_bytes(&mut iv);
 
-impl EncryptTestHelper {
-    /// Initialize encryption with test keys
-    pub fn initialize() {
-        INIT.call_once(|| {
-            std::env::set_var("APP_KEY", "base64:dGVzdGtleXRlc3RrZXl0ZXN0a2V5dGVzdGtleXRlc3Q=");
-            encrypt::Crypt::initialize().expect("Failed to initialize encryption");
-        });
-    }
+        // Encode as base64
+        let key_b64 = STANDARD.encode(&key);
+        let iv_b64 = STANDARD.encode(&iv);
 
-    /// Get a test encryption key
-    pub fn test_key() -> String {
-        "base64:dGVzdGtleXRlc3RrZXl0ZXN0a2V5dGVzdGtleXRlc3Q=".to_string()
-    }
-
-    /// Get a test previous key
-    pub fn test_previous_key() -> String {
-        "base64:cHJldmlvdXNrZXlwcmV2aW91c2tleXByZXZpb3Vza2V5cHI=".to_string()
-    }
-
-    /// Set up key rotation test environment
-    pub fn setup_key_rotation() {
-        std::env::set_var("APP_KEY", Self::test_key());
-        std::env::set_var("APP_PREVIOUS_KEYS", Self::test_previous_key());
-        encrypt::Crypt::initialize().expect("Failed to initialize encryption");
-    }
-
-    /// Clean up test environment
-    pub fn cleanup() {
-        std::env::remove_var("APP_KEY");
-        std::env::remove_var("APP_PREVIOUS_KEYS");
-    }
+        // Set environment variables
+        env::set_var("APP_KEY", format!("base64:{}", key_b64));
+        env::set_var("APP_IV", format!("base64:{}", iv_b64));
+    });
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use encrypt::Crypt;
 
     #[test]
-    fn test_helper_initialization() {
-        EncryptTestHelper::initialize();
-        let value = "test value";
-        let encrypted = Crypt::encrypt_string(value).unwrap();
-        let decrypted = Crypt::decrypt_string(&encrypted).unwrap();
-        assert_eq!(decrypted, value);
-    }
-
-    #[test]
-    fn test_helper_key_rotation() {
-        EncryptTestHelper::setup_key_rotation();
-        let value = "test value";
-        let encrypted = Crypt::encrypt_string(value).unwrap();
-        let decrypted = Crypt::decrypt_string(&encrypted).unwrap();
-        assert_eq!(decrypted, value);
-        EncryptTestHelper::cleanup();
+    fn test_setup_encryption() {
+        setup_test_encryption();
+        assert!(env::var("APP_KEY").is_ok());
+        assert!(env::var("APP_IV").is_ok());
     }
 }

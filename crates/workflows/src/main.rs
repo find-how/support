@@ -25,42 +25,18 @@ use uuid::Uuid;
 
 // ------------------------ Errors ------------------------
 
-#[derive(Error, Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum WorkflowError {
-    #[error("Persistence error: {0}")]
-    PersistenceError(String),
-
+    #[error("Storage error: {0}")]
+    Storage(String),
     #[error("Serialization error: {0}")]
-    SerializationError(String),
-
-    #[error("Execution error: {0}")]
-    ExecutionError(String),
-
+    Serialization(String),
     #[error("Workflow not found: {0}")]
-    WorkflowNotFound(Uuid),
-
-    #[error("Invalid operation: {0}")]
-    InvalidOperation(String),
-
-    #[error("Scheduler error: {0}")]
-    SchedulerError(String),
-
-    #[error("Signal error: {0}")]
-    SignalError(String),
-
-    #[error("Query error: {0}")]
-    QueryError(String),
-
-    #[error("Lock acquisition failed for workflow: {0}")]
-    LockAcquisitionError(Uuid),
-
-    #[error("Activity handler not found: {0}")]
-    ActivityHandlerNotFound(String),
-
-    #[error("Prometheus exporter error: {0}")]
-    PrometheusError(String),
-
-    // Add more error variants as needed
+    NotFound(String),
+    #[error("Invalid workflow state: {0}")]
+    InvalidState(String),
+    #[error("Custom error: {0}")]
+    Custom(String),
 }
 
 pub type Result<T> = std::result::Result<T, WorkflowError>;
@@ -75,6 +51,17 @@ pub enum WorkflowPriority {
     Critical,
 }
 
+impl std::fmt::Display for WorkflowPriority {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Low => write!(f, "Low"),
+            Self::Normal => write!(f, "Normal"),
+            Self::High => write!(f, "High"),
+            Self::Critical => write!(f, "Critical"),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub enum WorkflowStatus {
     Pending,
@@ -84,12 +71,35 @@ pub enum WorkflowStatus {
     Cancelled,
 }
 
+impl std::fmt::Display for WorkflowStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Pending => write!(f, "Pending"),
+            Self::Running => write!(f, "Running"),
+            Self::Completed => write!(f, "Completed"),
+            Self::Failed => write!(f, "Failed"),
+            Self::Cancelled => write!(f, "Cancelled"),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub enum StepStatus {
     Pending,
     InProgress,
     Completed,
     Failed,
+}
+
+impl std::fmt::Display for StepStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Pending => write!(f, "Pending"),
+            Self::InProgress => write!(f, "InProgress"),
+            Self::Completed => write!(f, "Completed"),
+            Self::Failed => write!(f, "Failed"),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -116,6 +126,16 @@ pub enum CompensationStatus {
     Pending,
     Completed,
     Failed(String),
+}
+
+impl std::fmt::Display for CompensationStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Pending => write!(f, "Pending"),
+            Self::Completed => write!(f, "Completed"),
+            Self::Failed(reason) => write!(f, "Failed({})", reason),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -229,6 +249,7 @@ pub trait WorkflowStorage: Send + Sync {
     async fn delete_workflow(&self, workflow_id: &Uuid) -> Result<()>;
 }
 
+#[derive(Debug)]
 pub struct SledWorkflowStorage {
     db: Arc<Db>,
     lock: Arc<Mutex<()>>, // Simple lock for transactional operations
@@ -250,11 +271,11 @@ impl WorkflowStorage for SledWorkflowStorage {
         let _guard = self.lock.lock().await;
         let key = format!("workflow:{}", workflow.id);
         let serialized = bincode::serialize(&workflow)
-            .map_err(|e| WorkflowError::SerializationError(e.to_string()))?;
+            .map_err(|e| WorkflowError::Serialization(e.to_string()))?;
         self.db.insert(key.as_bytes(), serialized)
-            .map_err(|e| WorkflowError::PersistenceError(e.to_string()))?;
+            .map_err(|e| WorkflowError::Storage(e.to_string()))?;
         self.db.flush()
-            .map_err(|e| WorkflowError::PersistenceError(e.to_string()))?;
+            .map_err(|e| WorkflowError::Storage(e.to_string()))?;
         Ok(())
     }
 
@@ -263,41 +284,39 @@ impl WorkflowStorage for SledWorkflowStorage {
         let _guard = self.lock.lock().await;
         let key = format!("workflow:{}", workflow.id);
         let serialized = bincode::serialize(workflow)
-            .map_err(|e| WorkflowError::SerializationError(e.to_string()))?;
+            .map_err(|e| WorkflowError::Serialization(e.to_string()))?;
         self.db.insert(key.as_bytes(), serialized)
-            .map_err(|e| WorkflowError::PersistenceError(e.to_string()))?;
+            .map_err(|e| WorkflowError::Storage(e.to_string()))?;
         self.db.flush()
-            .map_err(|e| WorkflowError::PersistenceError(e.to_string()))?;
+            .map_err(|e| WorkflowError::Storage(e.to_string()))?;
         Ok(())
     }
 
     #[instrument]
     async fn load_workflow(&self, workflow_id: &Uuid) -> Result<Option<WorkflowState>> {
         let key = format!("workflow:{}", workflow_id);
-        match self.db.get(key.as_bytes()) {
-            Ok(Some(value)) => {
-                let workflow: WorkflowState = bincode::deserialize(&value)
-                    .map_err(|e| WorkflowError::SerializationError(e.to_string()))?;
+        match self.db.get(key.as_bytes())
+            .map_err(|e| WorkflowError::Storage(e.to_string()))? {
+            Some(value) => {
+                let workflow: WorkflowState = bincode::deserialize(value.as_ref())
+                    .map_err(|e| WorkflowError::Serialization(e.to_string()))?;
                 Ok(Some(workflow))
-            },
-            Ok(None) => Ok(None),
-            Err(e) => Err(WorkflowError::PersistenceError(e.to_string())),
+            }
+            None => Ok(None),
         }
     }
 
     #[instrument]
     async fn list_workflows(&self) -> Result<Vec<WorkflowState>> {
         let mut workflows = Vec::new();
-        for result in self.db.scan_prefix(b"workflow:") {
-            match result {
-                Ok((_, value)) => {
-                    let workflow: WorkflowState = bincode::deserialize(&value)
-                        .map_err(|e| WorkflowError::SerializationError(e.to_string()))?;
+        let prefix = b"workflow:";
+
+        for item in self.db.scan_prefix(prefix) {
+            match item.map_err(|e| WorkflowError::Storage(e.to_string()))? {
+                (_, value) => {
+                    let workflow: WorkflowState = bincode::deserialize(value.as_ref())
+                        .map_err(|e| WorkflowError::Serialization(e.to_string()))?;
                     workflows.push(workflow);
-                },
-                Err(e) => {
-                    error!("Error scanning workflows: {}", e);
-                    return Err(WorkflowError::PersistenceError(e.to_string()));
                 }
             }
         }
@@ -306,14 +325,22 @@ impl WorkflowStorage for SledWorkflowStorage {
 
     #[instrument]
     async fn append_event(&self, workflow_id: &Uuid, event: WorkflowEvent) -> Result<()> {
-        // For demonstration, we won't store events separately
-        // Instead, we'll just update the workflow with the new event
-        let mut workflow = match self.load_workflow(workflow_id).await? {
-            Some(wf) => wf,
-            None => return Err(WorkflowError::WorkflowNotFound(*workflow_id)),
+        let _guard = self.lock.lock().await;
+        let key = format!("events:{}", workflow_id);
+        let mut events = if let Some(value) = self.db.get(key.as_bytes())
+            .map_err(|e| WorkflowError::Storage(e.to_string()))? {
+            bincode::deserialize(value.as_ref())
+                .map_err(|e| WorkflowError::Serialization(e.to_string()))?
+        } else {
+            Vec::new()
         };
-        workflow.events.push(event);
-        self.update_workflow(&workflow).await?;
+        events.push(event);
+        let serialized = bincode::serialize(&events)
+            .map_err(|e| WorkflowError::Serialization(e.to_string()))?;
+        self.db.insert(key.as_bytes(), serialized)
+            .map_err(|e| WorkflowError::Storage(e.to_string()))?;
+        self.db.flush()
+            .map_err(|e| WorkflowError::Storage(e.to_string()))?;
         Ok(())
     }
 
@@ -327,11 +354,11 @@ impl WorkflowStorage for SledWorkflowStorage {
         };
         let key = format!("snapshot:{}", workflow.id);
         let serialized = bincode::serialize(&snapshot)
-            .map_err(|e| WorkflowError::SerializationError(e.to_string()))?;
+            .map_err(|e| WorkflowError::Serialization(e.to_string()))?;
         self.db.insert(key.as_bytes(), serialized)
-            .map_err(|e| WorkflowError::PersistenceError(e.to_string()))?;
+            .map_err(|e| WorkflowError::Storage(e.to_string()))?;
         self.db.flush()
-            .map_err(|e| WorkflowError::PersistenceError(e.to_string()))?;
+            .map_err(|e| WorkflowError::Storage(e.to_string()))?;
         Ok(())
     }
 
@@ -340,9 +367,9 @@ impl WorkflowStorage for SledWorkflowStorage {
         let _guard = self.lock.lock().await;
         let key = format!("workflow:{}", workflow_id);
         self.db.remove(key.as_bytes())
-            .map_err(|e| WorkflowError::PersistenceError(e.to_string()))?;
+            .map_err(|e| WorkflowError::Storage(e.to_string()))?;
         self.db.flush()
-            .map_err(|e| WorkflowError::PersistenceError(e.to_string()))?;
+            .map_err(|e| WorkflowError::Storage(e.to_string()))?;
         Ok(())
     }
 }
@@ -361,7 +388,7 @@ impl ActivityHandler for FileProcessingHandler {
     async fn execute(&self, payload: HashMap<String, String>) -> Result<ActivityResult> {
         // Example: Simulate file processing
         let file_path = payload.get("file_path")
-            .ok_or_else(|| WorkflowError::InvalidOperation("Missing 'file_path' in payload".to_string()))?;
+            .ok_or_else(|| WorkflowError::InvalidState("Missing 'file_path' in payload".to_string()))?;
 
         info!("Processing file at path: {}", file_path);
 
@@ -385,7 +412,7 @@ pub struct ApiCallHandler;
 impl ActivityHandler for ApiCallHandler {
     async fn execute(&self, payload: HashMap<String, String>) -> Result<ActivityResult> {
         let api_endpoint = payload.get("api_endpoint")
-            .ok_or_else(|| WorkflowError::InvalidOperation("Missing 'api_endpoint' in payload".to_string()))?;
+            .ok_or_else(|| WorkflowError::InvalidState("Missing 'api_endpoint' in payload".to_string()))?;
 
         info!("Making API call to: {}", api_endpoint);
         tokio::time::sleep(Duration::from_secs(1)).await;
@@ -432,8 +459,26 @@ pub enum WorkflowSignal {
 
 #[derive(Debug)]
 pub enum WorkflowQuery {
-    GetStatus(oneshot::Sender<Result<WorkflowStatus>>),
     GetData(oneshot::Sender<Result<HashMap<String, String>>>),
+    GetStatus(oneshot::Sender<Result<WorkflowStatus>>),
+    GetWorkflow(oneshot::Sender<Result<Option<WorkflowState>>>),
+}
+
+impl WorkflowQuery {
+    pub fn handle(&self, workflow: &WorkflowState) -> Result<()> {
+        match self {
+            WorkflowQuery::GetData(tx) => {
+                let _ = tx.send(Ok(workflow.data.clone()));
+            }
+            WorkflowQuery::GetStatus(tx) => {
+                let _ = tx.send(Ok(workflow.status.clone()));
+            }
+            WorkflowQuery::GetWorkflow(tx) => {
+                let _ = tx.send(Ok(Some(workflow.clone())));
+            }
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug)]
@@ -505,7 +550,7 @@ impl<S: WorkflowStorage + 'static> WorkflowEngine<S> {
     ) -> Result<()> {
         let mut workflow = match storage.load_workflow(&workflow_id).await? {
             Some(wf) => wf,
-            None => return Err(WorkflowError::WorkflowNotFound(workflow_id)),
+            None => return Err(WorkflowError::NotFound(format!("Workflow {} not found", workflow_id))),
         };
 
         let next_step_id = workflow.steps.iter()
@@ -528,7 +573,7 @@ impl<S: WorkflowStorage + 'static> WorkflowEngine<S> {
         };
 
         let step = workflow.steps.iter_mut().find(|s| s.id == step_id)
-            .ok_or_else(|| WorkflowError::InvalidOperation(format!("Step {} not found", step_id)))?;
+            .ok_or_else(|| WorkflowError::InvalidState(format!("Step {} not found", step_id)))?;
 
         step.status = StepStatus::InProgress;
         workflow.current_step = Some(step.id);
@@ -551,7 +596,7 @@ impl<S: WorkflowStorage + 'static> WorkflowEngine<S> {
             WorkflowSignal::UpdateData(new_data) => {
                 let mut workflow = match storage.load_workflow(&workflow_id).await? {
                     Some(wf) => wf,
-                    None => return Err(WorkflowError::WorkflowNotFound(workflow_id)),
+                    None => return Err(WorkflowError::NotFound(format!("Workflow {} not found", workflow_id))),
                 };
 
                 workflow.data.extend(new_data);
@@ -570,7 +615,7 @@ impl<S: WorkflowStorage + 'static> WorkflowEngine<S> {
             WorkflowSignal::Cancel => {
                 let mut workflow = match storage.load_workflow(&workflow_id).await? {
                     Some(wf) => wf,
-                    None => return Err(WorkflowError::WorkflowNotFound(workflow_id)),
+                    None => return Err(WorkflowError::NotFound(format!("Workflow {} not found", workflow_id))),
                 };
 
                 workflow.status = WorkflowStatus::Cancelled;
@@ -594,41 +639,33 @@ impl<S: WorkflowStorage + 'static> WorkflowEngine<S> {
     ) -> Result<()> {
         let workflow = match storage.load_workflow(&workflow_id).await? {
             Some(wf) => wf,
-            None => return Err(WorkflowError::WorkflowNotFound(workflow_id)),
+            None => return Err(WorkflowError::NotFound(format!("Workflow {} not found", workflow_id))),
         };
 
-        match query {
-            WorkflowQuery::GetStatus(sender) => {
-                let _ = sender.send(Ok(workflow.status.clone()));
-            },
-            WorkflowQuery::GetData(sender) => {
-                let _ = sender.send(Ok(workflow.data.clone()));
-            },
-        }
-
+        query.handle(&workflow)?;
         Ok(())
     }
 
     pub async fn execute_step_command(&self, workflow_id: Uuid) -> Result<()> {
         self.command_sender.send(WorkflowCommand::ExecuteStep(workflow_id)).await
-            .map_err(|e| WorkflowError::InvalidOperation(e.to_string()))
+            .map_err(|e| WorkflowError::InvalidState(e.to_string()))
     }
 
     pub async fn send_signal(&self, workflow_id: Uuid, signal: WorkflowSignal) -> Result<()> {
         self.command_sender.send(WorkflowCommand::HandleSignal(workflow_id, signal)).await
-            .map_err(|e| WorkflowError::InvalidOperation(e.to_string()))
+            .map_err(|e| WorkflowError::InvalidState(e.to_string()))
     }
 
     pub async fn send_query(&self, workflow_id: Uuid, query: WorkflowQuery) -> Result<()> {
         self.command_sender.send(WorkflowCommand::HandleQuery(workflow_id, query)).await
-            .map_err(|e| WorkflowError::InvalidOperation(e.to_string()))
+            .map_err(|e| WorkflowError::InvalidState(e.to_string()))
     }
 
     pub async fn create_workflow(&self, workflow: WorkflowState) -> Result<()> {
         self.storage.create_workflow(workflow.clone()).await?;
         self.storage.append_event(&workflow.id, WorkflowEvent::WorkflowStarted(Utc::now())).await?;
         self.command_sender.send(WorkflowCommand::ExecuteStep(workflow.id)).await
-            .map_err(|e| WorkflowError::InvalidOperation(e.to_string()))
+            .map_err(|e| WorkflowError::InvalidState(e.to_string()))
     }
 }
 
@@ -649,7 +686,7 @@ pub struct Activity {
 pub struct WorkerPool<S: WorkflowStorage + 'static> {
     storage: Arc<S>,
     task_sender: mpsc::Sender<Task>,
-    task_receiver: Arc<Semaphore>,
+    task_receiver: mpsc::Receiver<Task>,
     workers: Vec<JoinHandle<()>>,
     active_workers: Arc<DashMap<Uuid, JoinHandle<()>>>,
     activity_registry: Arc<ActivityRegistry>,
@@ -657,11 +694,11 @@ pub struct WorkerPool<S: WorkflowStorage + 'static> {
 
 impl<S: WorkflowStorage + 'static> WorkerPool<S> {
     pub fn new(storage: Arc<S>, activity_registry: Arc<ActivityRegistry>, max_concurrent: usize) -> Self {
-        let (tx, rx) = mpsc::channel::<Task>(1000);
+        let (sender, receiver) = mpsc::channel(max_concurrent);
         Self {
             storage,
-            task_sender: tx,
-            task_receiver: Arc::new(Semaphore::new(max_concurrent)),
+            task_sender: sender,
+            task_receiver: receiver,
             workers: Vec::new(),
             active_workers: Arc::new(DashMap::new()),
             activity_registry,
@@ -671,31 +708,22 @@ impl<S: WorkflowStorage + 'static> WorkerPool<S> {
     pub fn start(&mut self, num_workers: usize) {
         for _ in 0..num_workers {
             let storage = self.storage.clone();
-            let mut receiver = self.task_sender.clone();
-            let semaphore = self.task_receiver.clone();
             let activity_registry = self.activity_registry.clone();
+            let mut receiver = self.task_receiver.clone();
             let active_workers = self.active_workers.clone();
 
-            let worker = tokio::spawn(async move {
+            let handle = tokio::spawn(async move {
                 while let Some(task) = receiver.recv().await {
-                    let permit = semaphore.acquire().await.unwrap();
-                    let storage = storage.clone();
-                    let activity_registry = activity_registry.clone();
-                    let workflow_id = task.workflow_id;
-                    let activity = task.activity.clone();
-
-                    let handle = tokio::spawn(async move {
-                        if let Err(e) = WorkerPool::execute_activity(storage, activity_registry, workflow_id, activity).await {
-                            error!("Activity execution failed: {}", e);
-                        }
-                        drop(permit);
-                    });
-
-                    active_workers.insert(workflow_id, handle);
+                    let worker_handle = tokio::spawn(Self::execute_activity(
+                        storage.clone(),
+                        activity_registry.clone(),
+                        task.workflow_id,
+                        task.activity,
+                    ));
+                    active_workers.insert(task.workflow_id, worker_handle);
                 }
             });
-
-            self.workers.push(worker);
+            self.workers.push(handle);
         }
     }
 
@@ -707,7 +735,7 @@ impl<S: WorkflowStorage + 'static> WorkerPool<S> {
         activity: Activity,
     ) -> Result<()> {
         let handler = activity_registry.get(&activity.handler)
-            .ok_or_else(|| WorkflowError::ActivityHandlerNotFound(activity.handler.clone()))?;
+            .ok_or_else(|| WorkflowError::NotFound(format!("Activity handler {} not found", activity.handler)))?;
 
         let start_time = Instant::now();
         let result = handler.execute(activity.payload.clone()).await?;
@@ -715,12 +743,12 @@ impl<S: WorkflowStorage + 'static> WorkerPool<S> {
 
         let mut workflow = match storage.load_workflow(&workflow_id).await? {
             Some(wf) => wf,
-            None => return Err(WorkflowError::WorkflowNotFound(workflow_id)),
+            None => return Err(WorkflowError::NotFound(format!("Workflow {} not found", workflow_id))),
         };
 
         let step = workflow.current_step
             .and_then(|id| workflow.steps.iter_mut().find(|s| s.id == id))
-            .ok_or_else(|| WorkflowError::InvalidOperation("Current step not found".to_string()))?;
+            .ok_or_else(|| WorkflowError::InvalidState("Current step not found".to_string()))?;
 
         step.status = StepStatus::Completed;
         step.output = Some(result.clone());
@@ -734,7 +762,7 @@ impl<S: WorkflowStorage + 'static> WorkerPool<S> {
 
     pub async fn dispatch_task(&self, workflow_id: Uuid, activity: Activity) -> Result<()> {
         self.task_sender.send(Task { workflow_id, activity }).await
-            .map_err(|e| WorkflowError::InvalidOperation(e.to_string()))
+            .map_err(|e| WorkflowError::InvalidState(e.to_string()))
     }
 }
 
@@ -762,7 +790,7 @@ impl<S: WorkflowStorage + 'static> WorkflowScheduler<S> {
 
     pub async fn add_scheduled_workflow(&self, workflow_def: WorkflowState, cron_expr: &str) -> Result<Uuid> {
         let schedule = Schedule::from_str(cron_expr)
-            .map_err(|e| WorkflowError::SchedulerError(e.to_string()))?;
+            .map_err(|e| WorkflowError::InvalidState(e.to_string()))?;
 
         let scheduled_workflow = ScheduledWorkflow {
             workflow_definition: workflow_def.clone(),
@@ -894,11 +922,11 @@ impl<S: WorkflowStorage + 'static> VersioningHandler<S> {
     pub async fn migrate_workflow(&self, workflow_id: Uuid, new_version: u32) -> Result<()> {
         let mut workflow = match self.storage.load_workflow(&workflow_id).await? {
             Some(wf) => wf,
-            None => return Err(WorkflowError::WorkflowNotFound(workflow_id)),
+            None => return Err(WorkflowError::NotFound(format!("Workflow {} not found", workflow_id))),
         };
 
         if workflow.version >= new_version {
-            return Err(WorkflowError::InvalidOperation(format!(
+            return Err(WorkflowError::InvalidState(format!(
                 "Workflow {} is already at version {}",
                 workflow_id, workflow.version
             )));
@@ -939,15 +967,14 @@ async fn serve_metrics() {
 
 // ------------------------ CLI Implementation ------------------------
 
-#[derive(Parser)]
-#[command(name = "Workflow CLI")]
-#[command(about = "Manage and interact with workflows", long_about = None)]
+#[derive(Parser, Debug)]
+#[command(author, version, about, long_about = None)]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Commands,
 }
 
-#[derive(Subcommand)]
+#[derive(Subcommand, Debug)]
 pub enum Commands {
     /// Create a new workflow
     Create(CreateArgs),
@@ -989,7 +1016,7 @@ pub enum Commands {
     ServeMetrics,
 }
 
-#[derive(Args)]
+#[derive(Args, Debug)]
 pub struct CreateArgs {
     #[arg(short, long)]
     pub definition: String,
@@ -999,7 +1026,7 @@ pub struct CreateArgs {
     pub tags: Vec<String>,
 }
 
-#[derive(Args)]
+#[derive(Args, Debug)]
 pub struct ListArgs {
     #[arg(short, long)]
     pub status: Option<String>,
@@ -1007,19 +1034,19 @@ pub struct ListArgs {
     pub tag: Option<String>,
 }
 
-#[derive(Args)]
+#[derive(Args, Debug)]
 pub struct ShowArgs {
     #[arg(short, long)]
     pub id: Uuid,
 }
 
-#[derive(Args)]
+#[derive(Args, Debug)]
 pub struct DeleteArgs {
     #[arg(short, long)]
     pub id: Uuid,
 }
 
-#[derive(Args)]
+#[derive(Args, Debug)]
 pub struct ExecuteArgs {
     #[arg(short, long)]
     pub id: Uuid,
@@ -1027,7 +1054,7 @@ pub struct ExecuteArgs {
     pub step_id: Uuid,
 }
 
-#[derive(Args)]
+#[derive(Args, Debug)]
 pub struct SendSignalArgs {
     #[arg(short, long)]
     pub id: Uuid,
@@ -1037,7 +1064,7 @@ pub struct SendSignalArgs {
     pub data: Vec<String>,
 }
 
-#[derive(Args)]
+#[derive(Args, Debug)]
 pub struct QueryArgs {
     #[arg(short, long)]
     pub id: Uuid,
@@ -1045,7 +1072,7 @@ pub struct QueryArgs {
     pub query: String,
 }
 
-#[derive(Args)]
+#[derive(Args, Debug)]
 pub struct ScheduleArgs {
     #[arg(short, long)]
     pub definition: String,
@@ -1055,13 +1082,13 @@ pub struct ScheduleArgs {
     pub tags: Vec<String>,
 }
 
-#[derive(Args)]
+#[derive(Args, Debug)]
 pub struct RemoveScheduleArgs {
     #[arg(short, long)]
     pub id: Uuid,
 }
 
-#[derive(Args)]
+#[derive(Args, Debug)]
 pub struct CreateChildArgs {
     #[arg(short, long)]
     pub parent_id: Uuid,
@@ -1071,13 +1098,13 @@ pub struct CreateChildArgs {
     pub tags: Vec<String>,
 }
 
-#[derive(Args)]
+#[derive(Args, Debug)]
 pub struct ListChildrenArgs {
     #[arg(short, long)]
     pub parent_id: Uuid,
 }
 
-#[derive(Args)]
+#[derive(Args, Debug)]
 pub struct MigrateArgs {
     #[arg(short, long)]
     pub id: Uuid,
@@ -1155,17 +1182,17 @@ pub async fn run_cli<S: WorkflowStorage + 'static>(engine: Arc<WorkflowEngine<S>
 
 async fn handle_create<S: WorkflowStorage + 'static>(engine: Arc<WorkflowEngine<S>>, args: CreateArgs) -> Result<()> {
     let file_contents = std::fs::read_to_string(&args.definition)
-        .map_err(|e| WorkflowError::InvalidOperation(format!("Cannot read definition file: {}", e)))?;
+        .map_err(|e| WorkflowError::InvalidState(format!("Cannot read definition file: {}", e)))?;
 
     let steps: Vec<WorkflowStep> = serde_json::from_str(&file_contents)
-        .map_err(|e| WorkflowError::SerializationError(e.to_string()))?;
+        .map_err(|e| WorkflowError::Serialization(e.to_string()))?;
 
     let priority = match args.priority.as_str() {
         "Low" => WorkflowPriority::Low,
         "Normal" => WorkflowPriority::Normal,
         "High" => WorkflowPriority::High,
         "Critical" => WorkflowPriority::Critical,
-        _ => return Err(WorkflowError::InvalidOperation("Invalid priority level".to_string())),
+        _ => return Err(WorkflowError::InvalidState("Invalid priority level".to_string())),
     };
 
     let workflow = WorkflowState::new(
@@ -1206,7 +1233,7 @@ async fn handle_list<S: WorkflowStorage + 'static>(engine: Arc<WorkflowEngine<S>
 
 async fn handle_show<S: WorkflowStorage + 'static>(engine: Arc<WorkflowEngine<S>>, args: ShowArgs) -> Result<()> {
     let workflow = engine.storage.load_workflow(&args.id).await?
-        .ok_or(WorkflowError::WorkflowNotFound(args.id))?;
+        .ok_or(WorkflowError::NotFound(format!("Workflow {} not found", args.id)))?;
 
     println!("Workflow ID: {}", workflow.id);
     println!("Status: {:?}", workflow.status);
@@ -1239,14 +1266,14 @@ async fn handle_send_signal<S: WorkflowStorage + 'static>(engine: Arc<WorkflowEn
             for kv in args.data {
                 let parts: Vec<&str> = kv.splitn(2, '=').collect();
                 if parts.len() != 2 {
-                    return Err(WorkflowError::InvalidOperation(format!("Bad data format: {}", kv)));
+                    return Err(WorkflowError::InvalidState(format!("Bad data format: {}", kv)));
                 }
                 data_map.insert(parts[0].to_string(), parts[1].to_string());
             }
             WorkflowSignal::UpdateData(data_map)
         }
         "Cancel" => WorkflowSignal::Cancel,
-        _ => return Err(WorkflowError::InvalidOperation("Invalid signal type".to_string())),
+        _ => return Err(WorkflowError::InvalidState("Invalid signal type".to_string())),
     };
 
     engine.send_signal(args.id, sig).await?;
@@ -1259,7 +1286,7 @@ async fn handle_query<S: WorkflowStorage + 'static>(engine: Arc<WorkflowEngine<S
     let query = match args.query.as_str() {
         "GetStatus" => WorkflowQuery::GetStatus(tx),
         "GetData" => WorkflowQuery::GetData(tx),
-        _ => return Err(WorkflowError::InvalidOperation("Invalid query".to_string())),
+        _ => return Err(WorkflowError::InvalidState("Invalid query".to_string())),
     };
 
     engine.send_query(args.id, query).await?;
@@ -1289,9 +1316,9 @@ async fn handle_remove_schedule<S: WorkflowStorage + 'static>(engine: Arc<Workfl
 
 async fn handle_create_child<S: WorkflowStorage + 'static>(engine: Arc<WorkflowEngine<S>>, args: CreateChildArgs) -> Result<()> {
     let file_contents = std::fs::read_to_string(&args.definition)
-        .map_err(|e| WorkflowError::InvalidOperation(format!("Cannot read child definition file: {}", e)))?;
+        .map_err(|e| WorkflowError::InvalidState(format!("Cannot read child definition file: {}", e)))?;
     let steps: Vec<WorkflowStep> = serde_json::from_str(&file_contents)
-        .map_err(|e| WorkflowError::SerializationError(e.to_string()))?;
+        .map_err(|e| WorkflowError::Serialization(e.to_string()))?;
 
     let mut child = WorkflowState::new(
         steps,
@@ -1324,11 +1351,11 @@ async fn handle_list_children<S: WorkflowStorage + 'static>(engine: Arc<Workflow
 async fn handle_migrate<S: WorkflowStorage + 'static>(engine: Arc<WorkflowEngine<S>>, args: MigrateArgs) -> Result<()> {
     let mut workflow = match engine.storage.load_workflow(&args.id).await? {
         Some(wf) => wf,
-        None => return Err(WorkflowError::WorkflowNotFound(args.id)),
+        None => return Err(WorkflowError::NotFound(format!("Workflow {} not found", args.id))),
     };
 
     if workflow.version >= args.version {
-        return Err(WorkflowError::InvalidOperation(format!(
+        return Err(WorkflowError::InvalidState(format!(
             "Workflow {} is already at version {}",
             args.id, workflow.version
         )));
@@ -1345,44 +1372,30 @@ async fn handle_migrate<S: WorkflowStorage + 'static>(engine: Arc<WorkflowEngine
 // ------------------------ Main Entry ------------------------
 
 #[tokio::main]
-async fn main() -> std::result::Result<(), WorkflowError> {
+async fn main() -> Result<()> {
     // Initialize logging
-    let subscriber = FmtSubscriber::builder()
-        .with_max_level(tracing::Level::INFO)
-        .finish();
-    tracing::subscriber::set_global_default(subscriber).expect("setting default subscriber failed");
+    let subscriber = FmtSubscriber::new();
+    tracing::subscriber::set_global_default(subscriber)
+        .map_err(|e| WorkflowError::Custom(e.to_string()))?;
 
-    // Optionally run a Prometheus metrics server
-    tokio::spawn(async {
-        serve_metrics().await;
-    });
+    // Parse CLI arguments
+    let cli = Cli::parse();
 
-    // Initialize storage
-    let db = sled::open("workflow_db")
-        .map_err(|e| WorkflowError::PersistenceError(e.to_string()))?;
-    let storage = Arc::new(SledWorkflowStorage::new(db));
+    // Initialize store
+    let store = sled::open("workflow_db")
+        .map_err(|e| WorkflowError::Storage(e.to_string()))?;
+    let storage = Arc::new(SledWorkflowStorage::new(store));
 
-    // Initialize activity registry and register handlers
+    // Initialize activity registry
     let activity_registry = Arc::new(ActivityRegistry::new());
     activity_registry.register("FileProcessing", Arc::new(FileProcessingHandler));
     activity_registry.register("ApiCall", Arc::new(ApiCallHandler));
 
     // Initialize workflow engine
-    let engine = Arc::new(WorkflowEngine::new(storage.clone(), activity_registry.clone()));
+    let engine = Arc::new(WorkflowEngine::new(storage, activity_registry));
 
-    // Worker pool
-    let mut worker_pool = WorkerPool::new(storage.clone(), activity_registry.clone(), 10);
-    worker_pool.start(10);
-
-    // CLI parse and run
-    let cli = Cli::parse();
-    run_cli(engine.clone(), cli).await;
-
-    // Keep the main task alive if needed (e.g. server scenario).
-    // For a CLI-only usage, we can simply return here.
-    // We'll wait for ctrl+c
-    tokio::signal::ctrl_c().await.expect("Failed to listen for ctrl_c");
-    info!("Shutting down gracefully.");
+    // Run CLI command
+    run_cli(engine, cli).await?;
 
     Ok(())
 }

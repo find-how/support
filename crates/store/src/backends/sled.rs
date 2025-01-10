@@ -1,102 +1,79 @@
-//! Sled backend implementation for the store.
-//!
-//! This module provides a Sled-backed implementation of the store traits,
-//! offering an embedded key-value store with good performance characteristics.
-
-use std::path::Path;
+use crate::{Error, Store, StdResult, BatchOperation, BatchStore};
 use async_trait::async_trait;
 use bytes::Bytes;
-use sled::{Db, IVec};
+use sled::Db;
+use std::sync::Arc;
 
-use crate::{Store, RangeStore, BatchStore, BatchOperation, Result, Error};
-
+#[derive(Clone)]
 pub struct SledStore {
-    db: Db,
+    db: Arc<Db>,
 }
 
 impl SledStore {
-    pub fn new(path: impl AsRef<Path>) -> Result<Self> {
-        let db = sled::open(path).map_err(Error::Backend)?;
-        Ok(Self { db })
+    pub fn new(path: impl AsRef<std::path::Path>) -> StdResult<Self, Error> {
+        let db = sled::open(path)?;
+        Ok(Self { db: Arc::new(db) })
+    }
+
+    pub fn new_test_store() -> Self {
+        let db = sled::Config::new()
+            .temporary(true)
+            .open()
+            .expect("Failed to create test store");
+        Self { db: Arc::new(db) }
     }
 }
 
 #[async_trait]
 impl Store for SledStore {
-    async fn get<K>(&self, key: K) -> Result<Option<Bytes>>
-    where
-        K: AsRef<[u8]> + Send + Sync,
-    {
-        let result = self.db.get(key.as_ref()).map_err(Error::Backend)?;
-        Ok(result.map(|v| Bytes::from(v.to_vec())))
+    type Error = Error;
+
+    async fn get(&self, key: &[u8]) -> StdResult<Option<Bytes>, Self::Error> {
+        match self.db.get(key)? {
+            Some(value) => Ok(Some(Bytes::copy_from_slice(&value))),
+            None => Ok(None),
+        }
     }
 
-    async fn set<K, V>(&self, key: K, value: V) -> Result<()>
-    where
-        K: AsRef<[u8]> + Send + Sync,
-        V: AsRef<[u8]> + Send + Sync,
-    {
-        self.db
-            .insert(key.as_ref(), value.as_ref())
-            .map_err(Error::Backend)?;
+    async fn set(&self, key: &[u8], value: Bytes) -> StdResult<(), Self::Error> {
+        self.db.insert(key, value.as_ref())?;
+        self.db.flush()?;
         Ok(())
     }
 
-    async fn delete<K>(&self, key: K) -> Result<()>
-    where
-        K: AsRef<[u8]> + Send + Sync,
-    {
-        self.db.remove(key.as_ref()).map_err(Error::Backend)?;
+    async fn delete(&self, key: &[u8]) -> StdResult<(), Self::Error> {
+        self.db.remove(key)?;
+        self.db.flush()?;
         Ok(())
     }
 
-    async fn contains<K>(&self, key: K) -> Result<bool>
-    where
-        K: AsRef<[u8]> + Send + Sync,
-    {
-        let result = self.db.contains_key(key.as_ref()).map_err(Error::Backend)?;
+    async fn batch_set(&self, kvs: Vec<(Vec<u8>, Bytes)>) -> StdResult<(), Self::Error> {
+        let mut batch = sled::Batch::default();
+        for (key, value) in kvs {
+            batch.insert(key.as_slice(), value.as_ref());
+        }
+        self.db.apply_batch(batch)?;
+        self.db.flush()?;
+        Ok(())
+    }
+
+    async fn batch_delete(&self, keys: Vec<Vec<u8>>) -> StdResult<(), Self::Error> {
+        let mut batch = sled::Batch::default();
+        for key in keys {
+            batch.remove(key.as_slice());
+        }
+        self.db.apply_batch(batch)?;
+        self.db.flush()?;
+        Ok(())
+    }
+
+    async fn range(&self, range: std::ops::Range<&[u8]>) -> StdResult<Vec<(Vec<u8>, Bytes)>, Self::Error> {
+        let mut result = Vec::new();
+        for item in self.db.range(range) {
+            let (key, value) = item?;
+            result.push((key.to_vec(), Bytes::copy_from_slice(&value)));
+        }
         Ok(result)
-    }
-
-    async fn clear(&self) -> Result<()> {
-        self.db.clear().map_err(Error::Backend)?;
-        Ok(())
-    }
-
-    async fn flush(&self) -> Result<()> {
-        self.db.flush().map_err(Error::Backend)?;
-        Ok(())
-    }
-}
-
-#[async_trait]
-impl RangeStore for SledStore {
-    type Range = std::ops::Range<Vec<u8>>;
-    type Iter = Box<dyn Iterator<Item = Result<(Vec<u8>, Vec<u8>)>> + Send>;
-
-    async fn range<R>(&self, range: R) -> Result<Self::Iter>
-    where
-        R: Into<Self::Range> + Send,
-    {
-        let range = range.into();
-        let iter = self
-            .db
-            .range(range)
-            .map(|r| r.map_err(Error::Backend))
-            .map(|r| r.map(|(k, v)| (k.to_vec(), v.to_vec())));
-        Ok(Box::new(iter))
-    }
-
-    async fn scan_prefix<P>(&self, prefix: P) -> Result<Self::Iter>
-    where
-        P: AsRef<[u8]> + Send + Sync,
-    {
-        let iter = self
-            .db
-            .scan_prefix(prefix.as_ref())
-            .map(|r| r.map_err(Error::Backend))
-            .map(|r| r.map(|(k, v)| (k.to_vec(), v.to_vec())));
-        Ok(Box::new(iter))
     }
 }
 
@@ -104,16 +81,8 @@ pub struct SledBatch {
     batch: sled::Batch,
 }
 
-impl SledBatch {
-    fn new() -> Self {
-        Self {
-            batch: sled::Batch::default(),
-        }
-    }
-}
-
 impl BatchOperation for SledBatch {
-    fn set<K, V>(&mut self, key: K, value: V) -> Result<()>
+    fn set<K, V>(&mut self, key: K, value: V) -> crate::Result<()>
     where
         K: AsRef<[u8]>,
         V: AsRef<[u8]>,
@@ -122,7 +91,7 @@ impl BatchOperation for SledBatch {
         Ok(())
     }
 
-    fn delete<K>(&mut self, key: K) -> Result<()>
+    fn delete<K>(&mut self, key: K) -> crate::Result<()>
     where
         K: AsRef<[u8]>,
     {
@@ -140,11 +109,65 @@ impl BatchStore for SledStore {
     type Batch = SledBatch;
 
     fn batch(&self) -> Self::Batch {
-        SledBatch::new()
+        SledBatch {
+            batch: sled::Batch::default(),
+        }
     }
 
-    async fn execute_batch(&self, batch: Self::Batch) -> Result<()> {
-        self.db.apply_batch(batch.batch).map_err(Error::Backend)?;
+    async fn execute_batch(&self, batch: Self::Batch) -> crate::Result<()> {
+        self.db.apply_batch(batch.batch)?;
+        self.db.flush()?;
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[tokio::test]
+    async fn test_basic_operations() -> crate::Result<()> {
+        let dir = tempdir()?;
+        let store = SledStore::new(dir.path())?;
+
+        // Test set and get
+        store.set(b"key1", Bytes::from("value1")).await?;
+        assert_eq!(store.get(b"key1").await?.unwrap(), Bytes::from("value1"));
+
+        // Test existence
+        assert!(store.get(b"key1").await?.is_some());
+        assert!(store.get(b"nonexistent").await?.is_none());
+
+        // Test delete
+        store.delete(b"key1").await?;
+        assert!(store.get(b"key1").await?.is_none());
+
+        // Test batch operations
+        store.set(b"key2", Bytes::from("value2")).await?;
+        store.batch_delete(vec![b"key2".to_vec()]).await?;
+        assert!(store.get(b"key2").await?.is_none());
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_batch_operations() -> crate::Result<()> {
+        let dir = tempdir()?;
+        let store = SledStore::new(dir.path())?;
+        let mut batch = store.batch();
+
+        // Add operations to batch
+        batch.set(b"batch1", b"value1")?;
+        batch.set(b"batch2", b"value2")?;
+
+        // Execute batch
+        store.execute_batch(batch).await?;
+
+        // Verify results
+        assert_eq!(store.get(b"batch1").await?.unwrap(), Bytes::from("value1"));
+        assert_eq!(store.get(b"batch2").await?.unwrap(), Bytes::from("value2"));
+
         Ok(())
     }
 }

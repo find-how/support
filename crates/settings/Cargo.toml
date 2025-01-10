@@ -4,26 +4,15 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-encrypt = { path = "../encrypt" }
-bincode = "1.3.3"
-clap = { version = "4.4.11", features = ["derive"] }
-dotenv = "0.15.0"
-lazy_static = "1.4.0"
-petgraph = "0.6.4"
-serde = { version = "1.0.193", features = ["derive"] }
-serde_json = "1.0.108"
-sled = "0.34.7"
-thiserror = "1.0.50"
-tokio = { version = "1.35.0", features = ["full"] }
+bytes = "1.5"
+store = { path = "../store" }
+thiserror = "1.0"
+tokio = { version = "1.0", features = ["full"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+clap = { version = "4.4", features = ["derive"] }
 
 [dev-dependencies]
-assert_fs = "1.0.13"
-criterion = "0.5.1"
-predicates = "3.0.4"
-pretty_assertions = "1.4.0"
-proptest = "1.3.1"
-tempfile = "3.8.1"
-
-[[bin]]
-name = "settings"
-path = "src/main.rs"
+tokio = { version = "1.0", features = ["full", "test-util"] }
+tempfile = "3.8"
+assert_fs = "1.0"

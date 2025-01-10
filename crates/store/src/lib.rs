@@ -13,129 +13,26 @@
 //! - Batch operations for atomic updates
 //! - Range and prefix scanning
 //! - Configurable persistence options
-//!
-//! # Example
-//!
-//! ```rust,no_run
-//! use store::{Store, TypedStore};
-//! use serde::{Serialize, Deserialize};
-//!
-//! #[derive(Serialize, Deserialize)]
-//! struct User {
-//!     name: String,
-//!     age: u32,
-//! }
-//!
-//! #[tokio::main]
-//! async fn main() -> store::Result<()> {
-//!     let store = store::backends::SledStore::open("users.db").await?;
-//!
-//!     // Store a typed value
-//!     let user = User {
-//!         name: "Alice".into(),
-//!         age: 30,
-//!     };
-//!     store.set_typed("user:1", &user).await?;
-//!
-//!     // Retrieve the value
-//!     if let Some(user) = store.get_typed::<_, User>("user:1").await? {
-//!         println!("Found user: {} ({})", user.name, user.age);
-//!     }
-//!
-//!     Ok(())
-//! }
-//! ```
 
-use std::path::PathBuf;
-use async_trait::async_trait;
 use bytes::Bytes;
-use serde::{de::DeserializeOwned, Serialize};
+use std::result::Result as StdResult;
 
 pub mod error;
-pub mod config;
 pub mod backends;
-mod utils;
 
-pub use error::{Error, Result};
-pub use config::Repository as Config;
+pub use error::Error;
+pub type Result<T, E = Error> = StdResult<T, E>;
 
-/// Core storage interface
-#[async_trait]
+#[async_trait::async_trait]
 pub trait Store: Send + Sync + 'static {
-    /// Get a value by key
-    async fn get<K>(&self, key: K) -> Result<Option<Bytes>>
-    where
-        K: AsRef<[u8]> + Send + Sync;
+    type Error;
 
-    /// Set a value by key
-    async fn set<K, V>(&self, key: K, value: V) -> Result<()>
-    where
-        K: AsRef<[u8]> + Send + Sync,
-        V: AsRef<[u8]> + Send + Sync;
-
-    /// Delete a value by key
-    async fn delete<K>(&self, key: K) -> Result<()>
-    where
-        K: AsRef<[u8]> + Send + Sync;
-
-    /// Check if a key exists
-    async fn contains<K>(&self, key: K) -> Result<bool>
-    where
-        K: AsRef<[u8]> + Send + Sync;
-
-    /// Clear all entries
-    async fn clear(&self) -> Result<()>;
-
-    /// Flush changes to disk
-    async fn flush(&self) -> Result<()>;
-}
-
-/// Range operations interface
-#[async_trait]
-pub trait RangeStore: Store {
-    /// Type representing a range
-    type Range: Send;
-    /// Type representing an iterator over entries
-    type Iter: Iterator<Item = Result<(Vec<u8>, Vec<u8>)>> + Send;
-
-    /// Get a range of entries
-    async fn range<R>(&self, range: R) -> Result<Self::Iter>
-    where
-        R: Into<Self::Range> + Send;
-
-    /// Get entries matching a prefix
-    async fn scan_prefix<P>(&self, prefix: P) -> Result<Self::Iter>
-    where
-        P: AsRef<[u8]> + Send + Sync;
-}
-
-/// High-level interface for storing serializable types
-#[async_trait]
-pub trait TypedStore: Store {
-    /// Get a typed value by key
-    async fn get_typed<K, V>(&self, key: K) -> Result<Option<V>>
-    where
-        K: AsRef<[u8]> + Send + Sync,
-        V: DeserializeOwned + Send;
-
-    /// Set a typed value by key
-    async fn set_typed<K, V>(&self, key: K, value: &V) -> Result<()>
-    where
-        K: AsRef<[u8]> + Send + Sync,
-        V: Serialize + Send + Sync;
-}
-
-/// Batch operations interface
-#[async_trait]
-pub trait BatchStore: Store {
-    /// Type representing a batch of operations
-    type Batch: BatchOperation + Send;
-
-    /// Create a new batch
-    fn batch(&self) -> Self::Batch;
-
-    /// Execute a batch of operations
-    async fn execute_batch(&self, batch: Self::Batch) -> Result<()>;
+    async fn get(&self, key: &[u8]) -> StdResult<Option<Bytes>, Self::Error>;
+    async fn set(&self, key: &[u8], value: Bytes) -> StdResult<(), Self::Error>;
+    async fn delete(&self, key: &[u8]) -> StdResult<(), Self::Error>;
+    async fn batch_set(&self, kvs: Vec<(Vec<u8>, Bytes)>) -> StdResult<(), Self::Error>;
+    async fn batch_delete(&self, keys: Vec<Vec<u8>>) -> StdResult<(), Self::Error>;
+    async fn range(&self, range: std::ops::Range<&[u8]>) -> StdResult<Vec<(Vec<u8>, Bytes)>, Self::Error>;
 }
 
 /// Interface for batch operations
@@ -155,28 +52,52 @@ pub trait BatchOperation {
     fn clear(&mut self);
 }
 
+/// Batch operations interface
+#[async_trait::async_trait]
+pub trait BatchStore: Store {
+    /// Type representing a batch of operations
+    type Batch: BatchOperation + Send;
+
+    /// Create a new batch
+    fn batch(&self) -> Self::Batch;
+
+    /// Execute a batch of operations
+    async fn execute_batch(&self, batch: Self::Batch) -> Result<()>;
+}
+
 #[cfg(test)]
-pub mod tests {
+mod tests {
     use super::*;
-    use testing::TestRuntime;
+    use testing::store::TestStore;
 
-    pub async fn test_store_implementation<S: Store>(store: S) -> Result<()> {
-        // Basic operations
-        store.set(b"key1", b"value1").await?;
-        assert_eq!(store.get(b"key1").await?.unwrap(), Bytes::from("value1"));
+    #[async_trait::async_trait]
+    impl TestStore for backends::sled::SledStore {
+        fn new_test_store() -> Self {
+            Self::new_test_store()
+        }
 
-        // Delete
-        store.delete(b"key1").await?;
-        assert!(store.get(b"key1").await?.is_none());
+        async fn get(&self, key: &[u8]) -> std::result::Result<Option<Bytes>, Box<dyn std::error::Error>> {
+            Ok(Store::get(self, key).await?)
+        }
 
-        // Contains
-        store.set(b"key2", b"value2").await?;
-        assert!(store.contains(b"key2").await?);
+        async fn set(&self, key: &[u8], value: Bytes) -> std::result::Result<(), Box<dyn std::error::Error>> {
+            Ok(Store::set(self, key, value).await?)
+        }
 
-        // Clear
-        store.clear().await?;
-        assert!(!store.contains(b"key2").await?);
+        async fn delete(&self, key: &[u8]) -> std::result::Result<(), Box<dyn std::error::Error>> {
+            Ok(Store::delete(self, key).await?)
+        }
 
-        Ok(())
+        async fn batch_set(&self, kvs: Vec<(Vec<u8>, Bytes)>) -> std::result::Result<(), Box<dyn std::error::Error>> {
+            Ok(Store::batch_set(self, kvs).await?)
+        }
+
+        async fn batch_delete(&self, keys: Vec<Vec<u8>>) -> std::result::Result<(), Box<dyn std::error::Error>> {
+            Ok(Store::batch_delete(self, keys).await?)
+        }
+
+        async fn range(&self, range: std::ops::Range<&[u8]>) -> std::result::Result<Vec<(Vec<u8>, Bytes)>, Box<dyn std::error::Error>> {
+            Ok(Store::range(self, range).await?)
+        }
     }
 }
