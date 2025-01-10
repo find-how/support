@@ -13,17 +13,26 @@ maintainability across our ecosystem.
 
 The repository is organized as a Rust workspace with multiple crates:
 
+- `config`: Configuration management with dot notation and environment overrides
+- `encrypt`: Encryption utilities for secure data storage and transmission
+- `queue`: Async job queuing and processing with sled backend
 - `settings`: Configuration management with encryption support
+- `store`: Storage abstraction layer with multiple backends
 - `testing`: Common testing utilities, fixtures, and helpers
-- _(More crates will be added as needed)_
+- `workflows`: Workflow engine and activity handlers
 
 ## Getting Started
 
-Add the desired crate to your `Cargo.toml`:
+Add the desired crate(s) to your `Cargo.toml`:
 
 ```toml
 [dependencies]
+config = { version = "0.1.0" }
+encrypt = { version = "0.1.0" }
+queue = { version = "0.1.0" }
 settings = { version = "0.1.0" }
+store = { version = "0.1.0" }
+workflows = { version = "0.1.0" }
 
 [dev-dependencies]
 testing = { version = "0.1.0" }
