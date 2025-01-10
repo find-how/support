@@ -109,6 +109,7 @@
 pub mod store;
 pub mod settings;
 pub mod encrypt;
+pub mod queue;
 
 pub use store::{
     bench::{bench_store, BenchConfig},
@@ -120,6 +121,10 @@ pub use store::{
 
 pub use settings::setup_test_settings;
 pub use encrypt::setup_test_encryption;
+pub use queue::{
+    bench::{bench_queue, QueueBenchConfig, QueueBenchResults},
+    property::{test_queue_operations, test_queue_strategy, QueueOp, QueueState},
+};
 
 /// A test runtime for async tests
 pub struct TestRuntime;
