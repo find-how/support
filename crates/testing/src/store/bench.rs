@@ -1,35 +1,84 @@
-//! Performance benchmarking utilities for store implementations.
+//! Benchmarking utilities for store implementations.
 //!
-//! This module provides utilities for benchmarking store operations, including:
-//! - Single operations (get, set, delete)
-//! - Batch operations
-//! - Range operations
+//! This module provides utilities for benchmarking store implementations under
+//! various conditions and workloads.
 //!
-//! The benchmarks use criterion.rs for accurate measurements and statistical analysis.
+//! # Features
+//!
+//! - Configurable benchmark parameters
+//! - Data generation utilities
+//! - Performance measurements
 //!
 //! # Example
 //!
 //! ```rust,no_run
 //! use testing::store::bench::{bench_store, BenchConfig};
 //! use testing::store::TestStore;
+//! use bytes::Bytes;
+//! use std::collections::HashMap;
+//! use std::sync::{Arc, Mutex};
+//! use async_trait::async_trait;
 //! use criterion::Criterion;
 //!
 //! #[derive(Clone)]
-//! struct MyStore;
+//! struct BenchTestStore {
+//!     data: Arc<Mutex<HashMap<Vec<u8>, Bytes>>>,
+//! }
 //!
-//! impl TestStore for MyStore {
+//! #[async_trait]
+//! impl TestStore for BenchTestStore {
 //!     fn new_test_store() -> Self {
-//!         MyStore
+//!         Self {
+//!             data: Arc::new(Mutex::new(HashMap::new())),
+//!         }
+//!     }
+//!
+//!     async fn get(&self, key: &[u8]) -> Result<Option<Bytes>, Box<dyn std::error::Error>> {
+//!         Ok(self.data.lock().unwrap().get(key).cloned())
+//!     }
+//!
+//!     async fn set(&self, key: &[u8], value: Bytes) -> Result<(), Box<dyn std::error::Error>> {
+//!         self.data.lock().unwrap().insert(key.to_vec(), value);
+//!         Ok(())
+//!     }
+//!
+//!     async fn delete(&self, key: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
+//!         self.data.lock().unwrap().remove(key);
+//!         Ok(())
+//!     }
+//!
+//!     async fn batch_set(&self, kvs: Vec<(Vec<u8>, Bytes)>) -> Result<(), Box<dyn std::error::Error>> {
+//!         let mut data = self.data.lock().unwrap();
+//!         for (key, value) in kvs {
+//!             data.insert(key, value);
+//!         }
+//!         Ok(())
+//!     }
+//!
+//!     async fn batch_delete(&self, keys: Vec<Vec<u8>>) -> Result<(), Box<dyn std::error::Error>> {
+//!         let mut data = self.data.lock().unwrap();
+//!         for key in keys {
+//!             data.remove(&key);
+//!         }
+//!         Ok(())
+//!     }
+//!
+//!     async fn range(&self, range: std::ops::Range<&[u8]>) -> Result<Vec<(Vec<u8>, Bytes)>, Box<dyn std::error::Error>> {
+//!         let data = self.data.lock().unwrap();
+//!         let mut result = Vec::new();
+//!         for (key, value) in data.iter() {
+//!             if key.as_slice() >= range.start && key.as_slice() < range.end {
+//!                 result.push((key.clone(), value.clone()));
+//!             }
+//!         }
+//!         Ok(result)
 //!     }
 //! }
 //!
 //! fn bench_my_store(c: &mut Criterion) {
 //!     let config = BenchConfig::default();
-//!     bench_store(c, "my_store", || MyStore::new_test_store(), &config);
+//!     bench_store(c, "my_store", || BenchTestStore::new_test_store(), &config);
 //! }
-//!
-//! criterion::criterion_group!(benches, bench_my_store);
-//! criterion::criterion_main!(benches);
 //! ```
 
 use criterion::{black_box, Criterion, Throughput};
@@ -189,44 +238,92 @@ impl BenchData {
     }
 }
 
-/// Runs a comprehensive set of benchmarks for a store implementation.
+/// Benchmarks a store implementation.
 ///
-/// This function benchmarks various store operations:
-/// - Single operations (get, set, delete)
-/// - Batch operations (batch set, batch delete)
-/// - Range operations (range scan)
+/// This function runs a series of benchmarks against a store implementation to
+/// measure its performance characteristics under various workloads.
 ///
 /// # Type Parameters
 ///
-/// * `S` - The store type to benchmark
+/// * `S` - The store type that implements [`TestStore`]
 /// * `F` - A function that creates new store instances
 ///
 /// # Arguments
 ///
 /// * `c` - The criterion benchmark harness
-/// * `name` - Name prefix for the benchmark group
+/// * `name` - Name of the benchmark group
 /// * `setup` - Function that creates new store instances
-/// * `config` - Benchmark configuration
+/// * `config` - Configuration for the benchmarks
 ///
 /// # Example
 ///
 /// ```rust,no_run
 /// use testing::store::bench::{bench_store, BenchConfig};
 /// use testing::store::TestStore;
+/// use bytes::Bytes;
+/// use std::collections::HashMap;
+/// use std::sync::{Arc, Mutex};
+/// use async_trait::async_trait;
 /// use criterion::Criterion;
 ///
 /// #[derive(Clone)]
-/// struct MyStore;
+/// struct BenchTestStore {
+///     data: Arc<Mutex<HashMap<Vec<u8>, Bytes>>>,
+/// }
 ///
-/// impl TestStore for MyStore {
+/// #[async_trait]
+/// impl TestStore for BenchTestStore {
 ///     fn new_test_store() -> Self {
-///         MyStore
+///         Self {
+///             data: Arc::new(Mutex::new(HashMap::new())),
+///         }
+///     }
+///
+///     async fn get(&self, key: &[u8]) -> Result<Option<Bytes>, Box<dyn std::error::Error>> {
+///         Ok(self.data.lock().unwrap().get(key).cloned())
+///     }
+///
+///     async fn set(&self, key: &[u8], value: Bytes) -> Result<(), Box<dyn std::error::Error>> {
+///         self.data.lock().unwrap().insert(key.to_vec(), value);
+///         Ok(())
+///     }
+///
+///     async fn delete(&self, key: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
+///         self.data.lock().unwrap().remove(key);
+///         Ok(())
+///     }
+///
+///     async fn batch_set(&self, kvs: Vec<(Vec<u8>, Bytes)>) -> Result<(), Box<dyn std::error::Error>> {
+///         let mut data = self.data.lock().unwrap();
+///         for (key, value) in kvs {
+///             data.insert(key, value);
+///         }
+///         Ok(())
+///     }
+///
+///     async fn batch_delete(&self, keys: Vec<Vec<u8>>) -> Result<(), Box<dyn std::error::Error>> {
+///         let mut data = self.data.lock().unwrap();
+///         for key in keys {
+///             data.remove(&key);
+///         }
+///         Ok(())
+///     }
+///
+///     async fn range(&self, range: std::ops::Range<&[u8]>) -> Result<Vec<(Vec<u8>, Bytes)>, Box<dyn std::error::Error>> {
+///         let data = self.data.lock().unwrap();
+///         let mut result = Vec::new();
+///         for (key, value) in data.iter() {
+///             if key.as_slice() >= range.start && key.as_slice() < range.end {
+///                 result.push((key.clone(), value.clone()));
+///             }
+///         }
+///         Ok(result)
 ///     }
 /// }
 ///
 /// fn bench_my_store(c: &mut Criterion) {
 ///     let config = BenchConfig::default();
-///     bench_store(c, "my_store", || MyStore::new_test_store(), &config);
+///     bench_store(c, "my_store", || BenchTestStore::new_test_store(), &config);
 /// }
 /// ```
 pub fn bench_store<S, F>(c: &mut Criterion, name: &str, setup: F, config: &BenchConfig)

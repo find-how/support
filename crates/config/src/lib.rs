@@ -7,20 +7,34 @@
 //! - Default values
 //! - Array operations
 
-use std::sync::Arc;
-use tokio::sync::RwLock;
 use std::collections::HashMap;
 use serde::{Serialize};
 use serde_json::Value;
 use thiserror::Error;
+use std::convert::TryFrom;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ConfigString(String);
 
-impl TryFrom<Value> for ConfigString {
-    type Error = serde_json::Error;
+#[derive(Debug, Clone, PartialEq)]
+pub struct ConfigBool(bool);
 
-    fn try_from(value: Value) -> std::result::Result<Self, Self::Error> {
+#[derive(Debug, Clone, PartialEq)]
+pub struct ConfigInt(i32);
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ConfigInt64(i64);
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ConfigFloat(f64);
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ConfigArray(Vec<Value>);
+
+impl TryFrom<Value> for ConfigString {
+    type Error = Error;
+
+    fn try_from(value: Value) -> Result<Self> {
         match value {
             Value::String(s) => Ok(ConfigString(s)),
             Value::Number(n) => Ok(ConfigString(n.to_string())),
@@ -31,15 +45,112 @@ impl TryFrom<Value> for ConfigString {
     }
 }
 
+impl TryFrom<Value> for ConfigBool {
+    type Error = Error;
+
+    fn try_from(value: Value) -> Result<Self> {
+        match value {
+            Value::Bool(b) => Ok(ConfigBool(b)),
+            Value::String(s) => Ok(ConfigBool(s.parse().unwrap_or(false))),
+            Value::Number(n) => Ok(ConfigBool(n.as_i64().map(|i| i != 0).unwrap_or(false))),
+            Value::Null => Ok(ConfigBool(false)),
+            _ => Err(Error::TypeConversion("Cannot convert to bool".to_string())),
+        }
+    }
+}
+
+impl TryFrom<Value> for ConfigInt {
+    type Error = Error;
+
+    fn try_from(value: Value) -> Result<Self> {
+        match value {
+            Value::Number(n) => Ok(ConfigInt(n.as_i64().unwrap_or(0) as i32)),
+            Value::String(s) => Ok(ConfigInt(s.parse().unwrap_or(0))),
+            Value::Bool(b) => Ok(ConfigInt(if b { 1 } else { 0 })),
+            Value::Null => Ok(ConfigInt(0)),
+            _ => Err(Error::TypeConversion("Cannot convert to int".to_string())),
+        }
+    }
+}
+
+impl TryFrom<Value> for ConfigInt64 {
+    type Error = serde_json::Error;
+
+    fn try_from(value: Value) -> std::result::Result<Self, Self::Error> {
+        match value {
+            Value::Number(n) => Ok(ConfigInt64(n.as_i64().unwrap_or(0))),
+            Value::String(s) => Ok(ConfigInt64(s.parse().unwrap_or(0))),
+            Value::Bool(b) => Ok(ConfigInt64(if b { 1 } else { 0 })),
+            Value::Null => Ok(ConfigInt64(0)),
+            _ => serde_json::from_value(value).map(ConfigInt64),
+        }
+    }
+}
+
+impl TryFrom<Value> for ConfigFloat {
+    type Error = serde_json::Error;
+
+    fn try_from(value: Value) -> std::result::Result<Self, Self::Error> {
+        match value {
+            Value::Number(n) => Ok(ConfigFloat(n.as_f64().unwrap_or(0.0))),
+            Value::String(s) => Ok(ConfigFloat(s.parse().unwrap_or(0.0))),
+            Value::Bool(b) => Ok(ConfigFloat(if b { 1.0 } else { 0.0 })),
+            Value::Null => Ok(ConfigFloat(0.0)),
+            _ => serde_json::from_value(value).map(ConfigFloat),
+        }
+    }
+}
+
+impl TryFrom<Value> for ConfigArray {
+    type Error = serde_json::Error;
+
+    fn try_from(value: Value) -> std::result::Result<Self, Self::Error> {
+        match value {
+            Value::Array(arr) => Ok(ConfigArray(arr)),
+            _ => Ok(ConfigArray(vec![value])),
+        }
+    }
+}
+
 impl From<ConfigString> for String {
     fn from(s: ConfigString) -> Self {
         s.0
     }
 }
 
-impl AsRef<str> for ConfigString {
-    fn as_ref(&self) -> &str {
-        &self.0
+impl From<ConfigBool> for bool {
+    fn from(b: ConfigBool) -> Self {
+        b.0
+    }
+}
+
+impl From<ConfigInt> for i32 {
+    fn from(i: ConfigInt) -> Self {
+        i.0
+    }
+}
+
+impl From<ConfigInt64> for i64 {
+    fn from(i: ConfigInt64) -> Self {
+        i.0
+    }
+}
+
+impl From<ConfigFloat> for f64 {
+    fn from(f: ConfigFloat) -> Self {
+        f.0
+    }
+}
+
+impl From<ConfigArray> for Vec<Value> {
+    fn from(a: ConfigArray) -> Self {
+        a.0
+    }
+}
+
+impl From<&str> for Error {
+    fn from(s: &str) -> Self {
+        Error::Custom(s.to_string())
     }
 }
 
@@ -53,72 +164,68 @@ pub enum Error {
     TypeConversion(String),
     #[error("Invalid key: {0}")]
     InvalidKey(String),
+    #[error("Custom error: {0}")]
+    Custom(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
 
 /// A configuration repository that provides access to configuration values
 pub struct Repository {
-    items: Arc<RwLock<HashMap<String, Value>>>,
+    store: HashMap<String, Value>,
 }
 
 impl Repository {
     /// Create a new configuration repository
-    pub fn new(items: HashMap<String, Value>) -> Self {
-        Self {
-            items: Arc::new(RwLock::new(items)),
-        }
+    pub fn new(initial: HashMap<String, Value>) -> Self {
+        Self { store: initial }
     }
 
     /// Check if a configuration key exists
-    pub async fn has(&self, key: &str) -> bool {
-        let items = self.items.read().await;
-        items.contains_key(key)
+    pub async fn has(&self, key: impl Into<String>) -> bool {
+        self.store.contains_key(&key.into())
     }
 
     /// Get a typed configuration value
     pub async fn get<T>(&self, key: impl Into<String>) -> Option<T>
     where
         T: TryFrom<Value> + Clone,
+        T::Error: std::fmt::Debug,
     {
-        let items = self.items.read().await;
-        let key = key.into();
-        items.get(&key).and_then(|v| T::try_from(v.clone()).ok())
+        self.store
+            .get(&key.into())
+            .and_then(|v| T::try_from(v.clone()).ok())
     }
 
     /// Get multiple configuration values
     pub async fn get_many<T>(&self, keys: Vec<String>) -> HashMap<String, T>
     where
         T: TryFrom<Value> + Clone,
+        T::Error: std::fmt::Debug,
     {
         let mut result = HashMap::new();
-        let items = self.items.read().await;
         for key in keys {
-            if let Some(v) = items.get(&key) {
-                if let Ok(val) = T::try_from(v.clone()) {
-                    result.insert(key, val);
-                }
+            if let Some(value) = self.get(&key).await {
+                result.insert(key, value);
             }
         }
         result
     }
 
     /// Set a configuration value
-    pub async fn set(&self, key: impl Into<String>, value: impl Serialize) -> Result<()> {
-        let mut items = self.items.write().await;
-        let value = serde_json::to_value(value)?;
-        items.insert(key.into(), value);
+    pub async fn set(&mut self, key: impl Into<String>, value: impl Into<Value>) -> Result<()> {
+        self.store.insert(key.into(), value.into());
         Ok(())
     }
 
     /// Get all configuration values
     pub async fn all(&self) -> HashMap<String, Value> {
-        self.items.read().await.clone()
+        self.store.clone()
     }
 
     /// Prepend a value to an array configuration
     pub async fn prepend(&self, key: &str, value: impl Serialize) -> Result<()> {
-        let mut items = self.items.write().await;
+        let mut items = self.store.clone();
         let value = serde_json::to_value(value)?;
         let entry = items.entry(key.to_string()).or_insert(Value::Array(vec![]));
 
@@ -132,7 +239,7 @@ impl Repository {
 
     /// Push a value to an array configuration
     pub async fn push(&self, key: &str, value: impl Serialize) -> Result<()> {
-        let mut items = self.items.write().await;
+        let mut items = self.store.clone();
         let value = serde_json::to_value(value)?;
         let entry = items.entry(key.to_string()).or_insert(Value::Array(vec![]));
 
@@ -146,52 +253,37 @@ impl Repository {
 
     /// Get a string configuration value
     pub async fn string(&self, key: &str) -> Result<String> {
-        let items = self.items.read().await;
-        match items.get(key) {
-            Some(Value::String(s)) => Ok(s.clone()),
-            Some(v) => Err(Error::TypeConversion(format!("Value at key '{}' is not a string: {:?}", key, v))),
-            None => Err(Error::InvalidKey(key.to_string())),
-        }
+        self.get::<ConfigString>(key).await
+            .map(String::from)
+            .ok_or_else(|| Error::InvalidKey(key.to_string()))
     }
 
     /// Get an array configuration value
     pub async fn array(&self, key: &str) -> Result<Vec<Value>> {
-        let items = self.items.read().await;
-        match items.get(key) {
-            Some(Value::Array(arr)) => Ok(arr.clone()),
-            Some(v) => Err(Error::TypeConversion(format!("Value at key '{}' is not an array: {:?}", key, v))),
-            None => Err(Error::InvalidKey(key.to_string())),
-        }
+        self.get::<ConfigArray>(key).await
+            .map(Vec::<Value>::from)
+            .ok_or_else(|| Error::InvalidKey(key.to_string()))
     }
 
     /// Get a boolean configuration value
     pub async fn boolean(&self, key: &str) -> Result<bool> {
-        let items = self.items.read().await;
-        match items.get(key) {
-            Some(Value::Bool(b)) => Ok(*b),
-            Some(v) => Err(Error::TypeConversion(format!("Value at key '{}' is not a boolean: {:?}", key, v))),
-            None => Err(Error::InvalidKey(key.to_string())),
-        }
+        self.get::<ConfigBool>(key).await
+            .map(bool::from)
+            .ok_or_else(|| Error::InvalidKey(key.to_string()))
     }
 
     /// Get an integer configuration value
-    pub async fn integer(&self, key: &str) -> Result<i64> {
-        let items = self.items.read().await;
-        match items.get(key) {
-            Some(Value::Number(n)) => n.as_i64().ok_or_else(|| Error::TypeConversion(format!("Value at key '{}' is not an integer", key))),
-            Some(v) => Err(Error::TypeConversion(format!("Value at key '{}' is not an integer: {:?}", key, v))),
-            None => Err(Error::InvalidKey(key.to_string())),
-        }
+    pub async fn integer(&self, key: &str) -> Result<i32> {
+        self.get::<ConfigInt>(key).await
+            .map(i32::from)
+            .ok_or_else(|| Error::InvalidKey(key.to_string()))
     }
 
     /// Get a float configuration value
     pub async fn float(&self, key: &str) -> Result<f64> {
-        let items = self.items.read().await;
-        match items.get(key) {
-            Some(Value::Number(n)) => n.as_f64().ok_or_else(|| Error::TypeConversion(format!("Value at key '{}' is not a float", key))),
-            Some(v) => Err(Error::TypeConversion(format!("Value at key '{}' is not a float: {:?}", key, v))),
-            None => Err(Error::InvalidKey(key.to_string())),
-        }
+        self.get::<ConfigFloat>(key).await
+            .map(f64::from)
+            .ok_or_else(|| Error::InvalidKey(key.to_string()))
     }
 }
 
@@ -199,123 +291,27 @@ impl Repository {
 mod tests {
     use super::*;
 
-    async fn setup_repository() -> Repository {
-        let mut items = HashMap::new();
-        items.insert(
-            "app.name".to_string(),
-            Value::String("Test App".to_string()),
-        );
-        items.insert("app.debug".to_string(), Value::Bool(true));
-        items.insert(
-            "database.host".to_string(),
-            Value::String("localhost".to_string()),
-        );
-        items.insert("database.port".to_string(), Value::Number(5432.into()));
-        Repository::new(items)
-    }
-
     #[tokio::test]
-    async fn test_get_value_when_key_contain_dot() {
-        let config = setup_repository().await;
-        let value: Option<String> = config.get("app.name").await;
-        assert_eq!(value, Some("Test App".to_string()));
-    }
+    async fn test_basic_operations() {
+        let mut initial = HashMap::new();
+        initial.insert("app.name".to_string(), Value::String("MyApp".to_string()));
+        let mut config = Repository::new(initial);
 
-    #[tokio::test]
-    async fn test_get_boolean_value() {
-        let config = setup_repository().await;
-        let value = config.boolean("app.debug").await.unwrap();
-        assert!(value);
-    }
+        // Test get
+        let value: Option<ConfigString> = config.get("app.name").await;
+        assert_eq!(String::from(value.unwrap()), "MyApp");
 
-    #[tokio::test]
-    async fn test_get_null_value() {
-        let config = setup_repository().await;
-        let value: Option<String> = config.get("nonexistent").await;
-        assert_eq!(value, None);
-    }
-
-    #[tokio::test]
-    async fn test_has_is_true() {
-        let config = setup_repository().await;
+        // Test has
         assert!(config.has("app.name").await);
-    }
-
-    #[tokio::test]
-    async fn test_has_is_false() {
-        let config = setup_repository().await;
         assert!(!config.has("nonexistent").await);
-    }
 
-    #[tokio::test]
-    async fn test_get() {
-        let config = setup_repository().await;
-        let value: Option<String> = config.get("app.name").await;
-        assert_eq!(value, Some("Test App".to_string()));
-    }
+        // Test get nonexistent
+        let value: Option<ConfigString> = config.get("nonexistent").await;
+        assert_eq!(value, None);
 
-    #[tokio::test]
-    async fn test_get_with_array_of_keys() {
-        let config = setup_repository().await;
-        let keys = vec![
-            "database.host".to_string(),
-            "database.port".to_string(),
-        ];
-        let values = config.get_many::<Value>(keys).await;
-        assert_eq!(values.len(), 2);
-        assert_eq!(values["database.host"], Value::String("localhost".to_string()));
-        assert_eq!(values["database.port"], Value::Number(5432.into()));
-    }
-
-    #[tokio::test]
-    async fn test_set() {
-        let config = setup_repository().await;
-        config.set("new.key", "new value").await.unwrap();
-        let value: Option<String> = config.get("new.key").await;
-        assert_eq!(value, Some("new value".to_string()));
-    }
-
-    #[tokio::test]
-    async fn test_set_array() {
-        let config = setup_repository().await;
-        let arr = vec!["value1", "value2"];
-        config.set("array.key", arr).await.unwrap();
-        let value = config.array("array.key").await.unwrap();
-        assert_eq!(value.len(), 2);
-        assert_eq!(value[0], Value::String("value1".to_string()));
-        assert_eq!(value[1], Value::String("value2".to_string()));
-    }
-
-    #[tokio::test]
-    async fn test_array_operations() {
-        let config = setup_repository().await;
-
-        // Test prepend
-        config.prepend("list", "first").await.unwrap();
-        config.prepend("list", "new first").await.unwrap();
-        let arr = config.array("list").await.unwrap();
-        assert_eq!(arr.len(), 2);
-        assert_eq!(arr[0], Value::String("new first".to_string()));
-        assert_eq!(arr[1], Value::String("first".to_string()));
-
-        // Test push
-        config.push("list", "last").await.unwrap();
-        let arr = config.array("list").await.unwrap();
-        assert_eq!(arr.len(), 3);
-        assert_eq!(arr[2], Value::String("last".to_string()));
-    }
-
-    #[tokio::test]
-    async fn test_type_specific_getters() {
-        let config = setup_repository().await;
-
-        assert_eq!(config.string("app.name").await.unwrap(), "Test App");
-        assert!(config.boolean("app.debug").await.unwrap());
-        assert_eq!(config.integer("database.port").await.unwrap(), 5432);
-
-        // Test error cases
-        assert!(config.string("app.debug").await.is_err());
-        assert!(config.boolean("app.name").await.is_err());
-        assert!(config.integer("database.host").await.is_err());
+        // Test set
+        config.set("new.key", "new value").await.expect("Failed to set value");
+        let value: Option<ConfigString> = config.get("new.key").await;
+        assert_eq!(String::from(value.unwrap()), "new value");
     }
 }

@@ -13,13 +13,64 @@
 //! # Example
 //!
 //! ```rust,no_run
-//! use testing::{TestStore, StoreTestContext};
+//! use testing::store::{TestStore, StoreTestContext};
+//! use bytes::Bytes;
+//! use std::collections::HashMap;
+//! use std::sync::{Arc, Mutex};
+//! use async_trait::async_trait;
 //!
-//! // Implement TestStore for your store type
+//! #[derive(Clone)]
+//! struct MyStore {
+//!     data: Arc<Mutex<HashMap<Vec<u8>, Bytes>>>,
+//! }
+//!
+//! #[async_trait]
 //! impl TestStore for MyStore {
 //!     fn new_test_store() -> Self {
-//!         // Create a new test instance
-//!         MyStore::new()
+//!         Self {
+//!             data: Arc::new(Mutex::new(HashMap::new())),
+//!         }
+//!     }
+//!
+//!     async fn get(&self, key: &[u8]) -> Result<Option<Bytes>, Box<dyn std::error::Error>> {
+//!         Ok(self.data.lock().unwrap().get(key).cloned())
+//!     }
+//!
+//!     async fn set(&self, key: &[u8], value: Bytes) -> Result<(), Box<dyn std::error::Error>> {
+//!         self.data.lock().unwrap().insert(key.to_vec(), value);
+//!         Ok(())
+//!     }
+//!
+//!     async fn delete(&self, key: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
+//!         self.data.lock().unwrap().remove(key);
+//!         Ok(())
+//!     }
+//!
+//!     async fn batch_set(&self, kvs: Vec<(Vec<u8>, Bytes)>) -> Result<(), Box<dyn std::error::Error>> {
+//!         let mut data = self.data.lock().unwrap();
+//!         for (key, value) in kvs {
+//!             data.insert(key, value);
+//!         }
+//!         Ok(())
+//!     }
+//!
+//!     async fn batch_delete(&self, keys: Vec<Vec<u8>>) -> Result<(), Box<dyn std::error::Error>> {
+//!         let mut data = self.data.lock().unwrap();
+//!         for key in keys {
+//!             data.remove(&key);
+//!         }
+//!         Ok(())
+//!     }
+//!
+//!     async fn range(&self, range: std::ops::Range<&[u8]>) -> Result<Vec<(Vec<u8>, Bytes)>, Box<dyn std::error::Error>> {
+//!         let data = self.data.lock().unwrap();
+//!         let mut result = Vec::new();
+//!         for (key, value) in data.iter() {
+//!             if key.as_slice() >= range.start && key.as_slice() < range.end {
+//!                 result.push((key.clone(), value.clone()));
+//!             }
+//!         }
+//!         Ok(result)
 //!     }
 //! }
 //!
@@ -30,7 +81,7 @@
 //!     let store = context.store;
 //!
 //!     // Test store operations
-//!     store.set(b"key", b"value").await.unwrap();
+//!     store.set(b"key", b"value".into()).await.unwrap();
 //!     let value = store.get(b"key").await.unwrap();
 //!     assert_eq!(value.as_deref(), Some(b"value".as_ref()));
 //! }
@@ -63,6 +114,8 @@ pub use store::{
     bench::{bench_store, BenchConfig},
     property::{test_kv_strategy, test_kvs_strategy, test_batch_ops_strategy, test_range_strategy},
     stress::stress_test,
+    TestStore,
+    StoreTestContext,
 };
 
 pub use settings::setup_test_settings;

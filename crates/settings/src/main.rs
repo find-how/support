@@ -1,5 +1,4 @@
 use clap::{Parser, Subcommand};
-use serde_json::Value;
 use std::sync::Arc;
 use store::backends::sled::SledStore;
 use settings::Settings;

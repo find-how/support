@@ -1,0 +1,71 @@
+---
+# Pingora Server Configuration
+version: 1
+
+# Core Settings
+threads: 4  # Number of worker threads per service
+pid_file: /var/run/securely/pingora.pid
+upgrade_sock: /var/run/securely/pingora_upgrade.sock
+daemon: true
+
+# User/Group Settings
+user: securely  # Run as securely user after privileged operations
+group: securely
+
+# Logging
+error_log: /var/log/securely/pingora_error.log
+log_level: info
+
+# Network Settings
+client_bind_to_ipv4: ["0.0.0.0"]
+client_bind_to_ipv6: ["::"]
+
+# TLS/Security
+ca_file: /etc/securely/ssl/ca.pem
+verify_cert: true
+verify_hostname: true
+
+# Connection Pool
+upstream_keepalive_pool_size: 1000
+work_stealing: true  # Enable work stealing for better load distribution
+
+# Custom Settings
+sled_db_path: /var/lib/securely/sled
+sled_cache_capacity: 1073741824  # 1GB cache
+sled_queue_path: /var/lib/securely/queue
+
+# DNS Settings
+dns:
+  hickory_dns:
+    bind_addr: "127.0.0.1:5353"
+    upstream_dns: ["1.1.1.1:53", "8.8.8.8:53"]
+    cache_size: 10000
+    ttl: 300
+
+# Metrics
+prometheus:
+  enabled: true
+  bind: "127.0.0.1:9898"
+  path: "/metrics"
+
+# Rate Limiting
+rate_limit:
+  enabled: true
+  window_ms: 60000  # 1 minute window
+  max_requests: 1000  # requests per window
+
+# Health Checks
+health_check:
+  enabled: true
+  interval_secs: 10
+  timeout_secs: 5
+  unhealthy_threshold: 3
+  healthy_threshold: 2
+
+# Proxy Settings
+proxy:
+  read_timeout_ms: 30000
+  write_timeout_ms: 30000
+  connect_timeout_ms: 5000
+  keepalive_secs: 60
+  max_requests_per_connection: 1000

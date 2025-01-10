@@ -1,28 +1,84 @@
 //! Edge case testing utilities for store implementations.
 //!
-//! This module provides utilities for testing store behavior under various edge cases,
-//! including empty values, large data, non-UTF8 content, concurrent modifications,
-//! and rapid sequential updates.
+//! This module provides utilities for testing store implementations under
+//! various edge cases and boundary conditions.
+//!
+//! # Features
+//!
+//! - Configurable edge case parameters
+//! - Concurrent modification testing
+//! - Error condition testing
 //!
 //! # Example
 //!
 //! ```rust,no_run
 //! use testing::store::edge::{run_edge_cases, EdgeCaseConfig};
 //! use testing::store::TestStore;
+//! use bytes::Bytes;
+//! use std::collections::HashMap;
+//! use std::sync::{Arc, Mutex};
+//! use async_trait::async_trait;
+//! use std::time::Duration;
 //!
 //! #[derive(Clone)]
-//! struct MyStore;
+//! struct EdgeTestStore {
+//!     data: Arc<Mutex<HashMap<Vec<u8>, Bytes>>>,
+//! }
 //!
-//! impl TestStore for MyStore {
+//! #[async_trait]
+//! impl TestStore for EdgeTestStore {
 //!     fn new_test_store() -> Self {
-//!         MyStore
+//!         Self {
+//!             data: Arc::new(Mutex::new(HashMap::new())),
+//!         }
+//!     }
+//!
+//!     async fn get(&self, key: &[u8]) -> Result<Option<Bytes>, Box<dyn std::error::Error>> {
+//!         Ok(self.data.lock().unwrap().get(key).cloned())
+//!     }
+//!
+//!     async fn set(&self, key: &[u8], value: Bytes) -> Result<(), Box<dyn std::error::Error>> {
+//!         self.data.lock().unwrap().insert(key.to_vec(), value);
+//!         Ok(())
+//!     }
+//!
+//!     async fn delete(&self, key: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
+//!         self.data.lock().unwrap().remove(key);
+//!         Ok(())
+//!     }
+//!
+//!     async fn batch_set(&self, kvs: Vec<(Vec<u8>, Bytes)>) -> Result<(), Box<dyn std::error::Error>> {
+//!         let mut data = self.data.lock().unwrap();
+//!         for (key, value) in kvs {
+//!             data.insert(key, value);
+//!         }
+//!         Ok(())
+//!     }
+//!
+//!     async fn batch_delete(&self, keys: Vec<Vec<u8>>) -> Result<(), Box<dyn std::error::Error>> {
+//!         let mut data = self.data.lock().unwrap();
+//!         for key in keys {
+//!             data.remove(&key);
+//!         }
+//!         Ok(())
+//!     }
+//!
+//!     async fn range(&self, range: std::ops::Range<&[u8]>) -> Result<Vec<(Vec<u8>, Bytes)>, Box<dyn std::error::Error>> {
+//!         let data = self.data.lock().unwrap();
+//!         let mut result = Vec::new();
+//!         for (key, value) in data.iter() {
+//!             if key.as_slice() >= range.start && key.as_slice() < range.end {
+//!                 result.push((key.clone(), value.clone()));
+//!             }
+//!         }
+//!         Ok(result)
 //!     }
 //! }
 //!
 //! #[tokio::test]
 //! async fn test_edge_cases() {
 //!     let config = EdgeCaseConfig::default();
-//!     let results = run_edge_cases(|| MyStore::new_test_store(), &config).await;
+//!     let results = run_edge_cases(|| EdgeTestStore::new_test_store(), &config).await;
 //!     assert_eq!(results.failed, 0, "Edge cases failed: {:?}", results.failures);
 //! }
 
@@ -110,25 +166,76 @@ impl Default for EdgeCaseConfig {
 /// ```rust,no_run
 /// use testing::store::edge::{run_edge_cases, EdgeCaseConfig};
 /// use testing::store::TestStore;
+/// use bytes::Bytes;
+/// use std::collections::HashMap;
+/// use std::sync::{Arc, Mutex};
+/// use async_trait::async_trait;
 ///
 /// #[derive(Clone)]
-/// struct MyStore;
+/// struct EdgeResultsTestStore {
+///     data: Arc<Mutex<HashMap<Vec<u8>, Bytes>>>,
+/// }
 ///
-/// impl TestStore for MyStore {
+/// #[async_trait]
+/// impl TestStore for EdgeResultsTestStore {
 ///     fn new_test_store() -> Self {
-///         MyStore
+///         Self {
+///             data: Arc::new(Mutex::new(HashMap::new())),
+///         }
+///     }
+///
+///     async fn get(&self, key: &[u8]) -> Result<Option<Bytes>, Box<dyn std::error::Error>> {
+///         Ok(self.data.lock().unwrap().get(key).cloned())
+///     }
+///
+///     async fn set(&self, key: &[u8], value: Bytes) -> Result<(), Box<dyn std::error::Error>> {
+///         self.data.lock().unwrap().insert(key.to_vec(), value);
+///         Ok(())
+///     }
+///
+///     async fn delete(&self, key: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
+///         self.data.lock().unwrap().remove(key);
+///         Ok(())
+///     }
+///
+///     async fn batch_set(&self, kvs: Vec<(Vec<u8>, Bytes)>) -> Result<(), Box<dyn std::error::Error>> {
+///         let mut data = self.data.lock().unwrap();
+///         for (key, value) in kvs {
+///             data.insert(key, value);
+///         }
+///         Ok(())
+///     }
+///
+///     async fn batch_delete(&self, keys: Vec<Vec<u8>>) -> Result<(), Box<dyn std::error::Error>> {
+///         let mut data = self.data.lock().unwrap();
+///         for key in keys {
+///             data.remove(&key);
+///         }
+///         Ok(())
+///     }
+///
+///     async fn range(&self, range: std::ops::Range<&[u8]>) -> Result<Vec<(Vec<u8>, Bytes)>, Box<dyn std::error::Error>> {
+///         let data = self.data.lock().unwrap();
+///         let mut result = Vec::new();
+///         for (key, value) in data.iter() {
+///             if key.as_slice() >= range.start && key.as_slice() < range.end {
+///                 result.push((key.clone(), value.clone()));
+///             }
+///         }
+///         Ok(result)
 ///     }
 /// }
 ///
 /// #[tokio::test]
 /// async fn analyze_edge_case_results() {
 ///     let config = EdgeCaseConfig::default();
-///     let results = run_edge_cases(|| MyStore::new_test_store(), &config).await;
+///     let results = run_edge_cases(|| EdgeResultsTestStore::new_test_store(), &config).await;
 ///
 ///     println!("Successful tests: {}", results.successful);
 ///     println!("Failed tests: {}", results.failed);
 ///     println!("Failed cases: {:?}", results.failures);
 /// }
+/// ```
 #[derive(Debug)]
 pub struct EdgeCaseResults {
     /// Number of successful edge case tests
@@ -164,22 +271,73 @@ pub struct EdgeCaseResults {
 /// ```rust,no_run
 /// use testing::store::edge::{run_edge_cases, EdgeCaseConfig};
 /// use testing::store::TestStore;
+/// use bytes::Bytes;
+/// use std::collections::HashMap;
+/// use std::sync::{Arc, Mutex};
+/// use async_trait::async_trait;
 ///
 /// #[derive(Clone)]
-/// struct MyStore;
+/// struct EdgeCasesFnStore {
+///     data: Arc<Mutex<HashMap<Vec<u8>, Bytes>>>,
+/// }
 ///
-/// impl TestStore for MyStore {
+/// #[async_trait]
+/// impl TestStore for EdgeCasesFnStore {
 ///     fn new_test_store() -> Self {
-///         MyStore
+///         Self {
+///             data: Arc::new(Mutex::new(HashMap::new())),
+///         }
+///     }
+///
+///     async fn get(&self, key: &[u8]) -> Result<Option<Bytes>, Box<dyn std::error::Error>> {
+///         Ok(self.data.lock().unwrap().get(key).cloned())
+///     }
+///
+///     async fn set(&self, key: &[u8], value: Bytes) -> Result<(), Box<dyn std::error::Error>> {
+///         self.data.lock().unwrap().insert(key.to_vec(), value);
+///         Ok(())
+///     }
+///
+///     async fn delete(&self, key: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
+///         self.data.lock().unwrap().remove(key);
+///         Ok(())
+///     }
+///
+///     async fn batch_set(&self, kvs: Vec<(Vec<u8>, Bytes)>) -> Result<(), Box<dyn std::error::Error>> {
+///         let mut data = self.data.lock().unwrap();
+///         for (key, value) in kvs {
+///             data.insert(key, value);
+///         }
+///         Ok(())
+///     }
+///
+///     async fn batch_delete(&self, keys: Vec<Vec<u8>>) -> Result<(), Box<dyn std::error::Error>> {
+///         let mut data = self.data.lock().unwrap();
+///         for key in keys {
+///             data.remove(&key);
+///         }
+///         Ok(())
+///     }
+///
+///     async fn range(&self, range: std::ops::Range<&[u8]>) -> Result<Vec<(Vec<u8>, Bytes)>, Box<dyn std::error::Error>> {
+///         let data = self.data.lock().unwrap();
+///         let mut result = Vec::new();
+///         for (key, value) in data.iter() {
+///             if key.as_slice() >= range.start && key.as_slice() < range.end {
+///                 result.push((key.clone(), value.clone()));
+///             }
+///         }
+///         Ok(result)
 ///     }
 /// }
 ///
 /// #[tokio::test]
 /// async fn test_edge_cases() {
 ///     let config = EdgeCaseConfig::default();
-///     let results = run_edge_cases(|| MyStore::new_test_store(), &config).await;
+///     let results = run_edge_cases(|| EdgeCasesFnStore::new_test_store(), &config).await;
 ///     assert_eq!(results.failed, 0, "Edge cases failed: {:?}", results.failures);
 /// }
+/// ```
 pub async fn run_edge_cases<S, F>(setup: F, config: &EdgeCaseConfig) -> EdgeCaseResults
 where
     S: Clone + Send + Sync + 'static,

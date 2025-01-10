@@ -20,21 +20,75 @@
 //!
 //! ```rust,no_run
 //! use testing::store::{TestStore, StoreTestContext};
+//! use bytes::Bytes;
+//! use std::collections::HashMap;
+//! use std::sync::{Arc, Mutex};
+//! use async_trait::async_trait;
 //!
 //! #[derive(Clone)]
-//! struct MyStore;
+//! struct BasicTestStore {
+//!     data: Arc<Mutex<HashMap<Vec<u8>, Bytes>>>,
+//! }
 //!
-//! impl TestStore for MyStore {
+//! #[async_trait]
+//! impl TestStore for BasicTestStore {
 //!     fn new_test_store() -> Self {
-//!         MyStore
+//!         Self {
+//!             data: Arc::new(Mutex::new(HashMap::new())),
+//!         }
+//!     }
+//!
+//!     async fn get(&self, key: &[u8]) -> Result<Option<Bytes>, Box<dyn std::error::Error>> {
+//!         Ok(self.data.lock().unwrap().get(key).cloned())
+//!     }
+//!
+//!     async fn set(&self, key: &[u8], value: Bytes) -> Result<(), Box<dyn std::error::Error>> {
+//!         self.data.lock().unwrap().insert(key.to_vec(), value);
+//!         Ok(())
+//!     }
+//!
+//!     async fn delete(&self, key: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
+//!         self.data.lock().unwrap().remove(key);
+//!         Ok(())
+//!     }
+//!
+//!     async fn batch_set(&self, kvs: Vec<(Vec<u8>, Bytes)>) -> Result<(), Box<dyn std::error::Error>> {
+//!         let mut data = self.data.lock().unwrap();
+//!         for (key, value) in kvs {
+//!             data.insert(key, value);
+//!         }
+//!         Ok(())
+//!     }
+//!
+//!     async fn batch_delete(&self, keys: Vec<Vec<u8>>) -> Result<(), Box<dyn std::error::Error>> {
+//!         let mut data = self.data.lock().unwrap();
+//!         for key in keys {
+//!             data.remove(&key);
+//!         }
+//!         Ok(())
+//!     }
+//!
+//!     async fn range(&self, range: std::ops::Range<&[u8]>) -> Result<Vec<(Vec<u8>, Bytes)>, Box<dyn std::error::Error>> {
+//!         let data = self.data.lock().unwrap();
+//!         let mut result = Vec::new();
+//!         for (key, value) in data.iter() {
+//!             if key.as_slice() >= range.start && key.as_slice() < range.end {
+//!                 result.push((key.clone(), value.clone()));
+//!             }
+//!         }
+//!         Ok(result)
 //!     }
 //! }
 //!
 //! #[tokio::test]
 //! async fn test_with_context() {
-//!     let context = StoreTestContext::<MyStore>::new();
+//!     let context = StoreTestContext::<BasicTestStore>::new();
 //!     let store = context.store;
-//!     // Test store operations...
+//!
+//!     // Test store operations
+//!     store.set(b"key", b"value".into()).await.unwrap();
+//!     let value = store.get(b"key").await.unwrap();
+//!     assert_eq!(value.as_deref(), Some(b"value".as_ref()));
 //! }
 //! ```
 
@@ -115,21 +169,75 @@ impl Default for TempStoreDir {
 ///
 /// ```rust,no_run
 /// use testing::store::{TestStore, StoreTestContext};
+/// use bytes::Bytes;
+/// use std::collections::HashMap;
+/// use std::sync::{Arc, Mutex};
+/// use async_trait::async_trait;
 ///
 /// #[derive(Clone)]
-/// struct MyStore;
+/// struct ContextTestStore {
+///     data: Arc<Mutex<HashMap<Vec<u8>, Bytes>>>,
+/// }
 ///
-/// impl TestStore for MyStore {
+/// #[async_trait]
+/// impl TestStore for ContextTestStore {
 ///     fn new_test_store() -> Self {
-///         MyStore
+///         Self {
+///             data: Arc::new(Mutex::new(HashMap::new())),
+///         }
+///     }
+///
+///     async fn get(&self, key: &[u8]) -> Result<Option<Bytes>, Box<dyn std::error::Error>> {
+///         Ok(self.data.lock().unwrap().get(key).cloned())
+///     }
+///
+///     async fn set(&self, key: &[u8], value: Bytes) -> Result<(), Box<dyn std::error::Error>> {
+///         self.data.lock().unwrap().insert(key.to_vec(), value);
+///         Ok(())
+///     }
+///
+///     async fn delete(&self, key: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
+///         self.data.lock().unwrap().remove(key);
+///         Ok(())
+///     }
+///
+///     async fn batch_set(&self, kvs: Vec<(Vec<u8>, Bytes)>) -> Result<(), Box<dyn std::error::Error>> {
+///         let mut data = self.data.lock().unwrap();
+///         for (key, value) in kvs {
+///             data.insert(key, value);
+///         }
+///         Ok(())
+///     }
+///
+///     async fn batch_delete(&self, keys: Vec<Vec<u8>>) -> Result<(), Box<dyn std::error::Error>> {
+///         let mut data = self.data.lock().unwrap();
+///         for key in keys {
+///             data.remove(&key);
+///         }
+///         Ok(())
+///     }
+///
+///     async fn range(&self, range: std::ops::Range<&[u8]>) -> Result<Vec<(Vec<u8>, Bytes)>, Box<dyn std::error::Error>> {
+///         let data = self.data.lock().unwrap();
+///         let mut result = Vec::new();
+///         for (key, value) in data.iter() {
+///             if key.as_slice() >= range.start && key.as_slice() < range.end {
+///                 result.push((key.clone(), value.clone()));
+///             }
+///         }
+///         Ok(result)
 ///     }
 /// }
 ///
 /// #[tokio::test]
 /// async fn test_with_context() {
-///     let context = StoreTestContext::<MyStore>::new();
+///     let context = StoreTestContext::<ContextTestStore>::new();
 ///     let store = context.store;
-///     // Test store operations...
+///
+///     // Test store operations
+///     store.set(b"key", b"value".into()).await.unwrap();
+///     let value = store.get(b"key").await.unwrap();
+///     assert_eq!(value.as_deref(), Some(b"value".as_ref()));
 /// }
 /// ```
 pub struct StoreTestContext<S: TestStore> {
@@ -162,13 +270,61 @@ impl<S: TestStore> Default for StoreTestContext<S> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
+    use std::sync::Mutex;
 
     #[derive(Clone)]
-    struct MockStore;
+    struct MockStore {
+        data: std::sync::Arc<Mutex<HashMap<Vec<u8>, Bytes>>>,
+    }
 
+    #[async_trait::async_trait]
     impl TestStore for MockStore {
         fn new_test_store() -> Self {
-            Self
+            Self {
+                data: std::sync::Arc::new(Mutex::new(HashMap::new())),
+            }
+        }
+
+        async fn get(&self, key: &[u8]) -> Result<Option<Bytes>, Box<dyn std::error::Error>> {
+            Ok(self.data.lock().unwrap().get(key).cloned())
+        }
+
+        async fn set(&self, key: &[u8], value: Bytes) -> Result<(), Box<dyn std::error::Error>> {
+            self.data.lock().unwrap().insert(key.to_vec(), value);
+            Ok(())
+        }
+
+        async fn delete(&self, key: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
+            self.data.lock().unwrap().remove(key);
+            Ok(())
+        }
+
+        async fn batch_set(&self, kvs: Vec<(Vec<u8>, Bytes)>) -> Result<(), Box<dyn std::error::Error>> {
+            let mut data = self.data.lock().unwrap();
+            for (key, value) in kvs {
+                data.insert(key, value);
+            }
+            Ok(())
+        }
+
+        async fn batch_delete(&self, keys: Vec<Vec<u8>>) -> Result<(), Box<dyn std::error::Error>> {
+            let mut data = self.data.lock().unwrap();
+            for key in keys {
+                data.remove(&key);
+            }
+            Ok(())
+        }
+
+        async fn range(&self, range: std::ops::Range<&[u8]>) -> Result<Vec<(Vec<u8>, Bytes)>, Box<dyn std::error::Error>> {
+            let data = self.data.lock().unwrap();
+            let mut result = Vec::new();
+            for (key, value) in data.iter() {
+                if key.as_slice() >= range.start && key.as_slice() < range.end {
+                    result.push((key.clone(), value.clone()));
+                }
+            }
+            Ok(result)
         }
     }
 

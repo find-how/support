@@ -1,40 +1,23 @@
 use config::Repository;
+use serde_json::json;
+use std::collections::HashMap;
 
 #[tokio::main]
 async fn main() {
-    // Create a new configuration repository
-    let config = Repository::new(Default::default());
+    // Create initial config
+    let mut initial = HashMap::new();
+    initial.insert("app.name".to_string(), json!("MyApp"));
+    initial.insert("app.debug".to_string(), json!(true));
+    initial.insert("database.port".to_string(), json!(5432));
 
-    // Set some configuration values
-    config.set("app.name", "MyApp").await.unwrap();
-    config.set("app.debug", true).await.unwrap();
-    config.set("database.host", "localhost").await.unwrap();
-    config.set("database.port", 5432).await.unwrap();
-    config.set("database.credentials.username", "admin").await.unwrap();
-    config.set("database.credentials.password", "secret").await.unwrap();
+    let config = Repository::new(initial);
 
-    // Get configuration values with type safety
-    let app_name: Option<String> = config.get("app.name").await;
-    let debug_mode: Option<bool> = config.get("app.debug").await;
-    let db_port: Option<i32> = config.get("database.port").await;
+    // Get typed values
+    let app_name = config.string("app.name").await.unwrap();
+    let debug_mode = config.boolean("app.debug").await.unwrap();
+    let db_port = config.integer("database.port").await.unwrap();
 
-    println!("App Name: {:?}", app_name);
-    println!("Debug Mode: {:?}", debug_mode);
-    println!("Database Port: {:?}", db_port);
-
-    // Get multiple values at once
-    let db_settings = config.get_many::<String>(vec![
-        "database.host".to_string(),
-        "database.credentials.username".to_string(),
-    ]).await;
-
-    println!("Database Settings: {:?}", db_settings);
-
-    // Check if a configuration exists
-    println!("Has app.name: {}", config.has("app.name").await);
-    println!("Has unknown.key: {}", config.has("unknown.key").await);
-
-    // Get all configuration values
-    let all = config.all().await;
-    println!("All settings: {:?}", all);
+    println!("App name: {}", app_name);
+    println!("Debug mode: {}", debug_mode);
+    println!("DB port: {}", db_port);
 }

@@ -16,14 +16,64 @@
 //! ```rust,no_run
 //! use testing::store::stress::{stress_test, StressConfig};
 //! use testing::store::TestStore;
+//! use bytes::Bytes;
+//! use std::collections::HashMap;
+//! use std::sync::{Arc, Mutex};
+//! use async_trait::async_trait;
 //! use std::time::Duration;
 //!
 //! #[derive(Clone)]
-//! struct MyStore;
+//! struct StressTestStore {
+//!     data: Arc<Mutex<HashMap<Vec<u8>, Bytes>>>,
+//! }
 //!
-//! impl TestStore for MyStore {
+//! #[async_trait]
+//! impl TestStore for StressTestStore {
 //!     fn new_test_store() -> Self {
-//!         MyStore
+//!         Self {
+//!             data: Arc::new(Mutex::new(HashMap::new())),
+//!         }
+//!     }
+//!
+//!     async fn get(&self, key: &[u8]) -> Result<Option<Bytes>, Box<dyn std::error::Error>> {
+//!         Ok(self.data.lock().unwrap().get(key).cloned())
+//!     }
+//!
+//!     async fn set(&self, key: &[u8], value: Bytes) -> Result<(), Box<dyn std::error::Error>> {
+//!         self.data.lock().unwrap().insert(key.to_vec(), value);
+//!         Ok(())
+//!     }
+//!
+//!     async fn delete(&self, key: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
+//!         self.data.lock().unwrap().remove(key);
+//!         Ok(())
+//!     }
+//!
+//!     async fn batch_set(&self, kvs: Vec<(Vec<u8>, Bytes)>) -> Result<(), Box<dyn std::error::Error>> {
+//!         let mut data = self.data.lock().unwrap();
+//!         for (key, value) in kvs {
+//!             data.insert(key, value);
+//!         }
+//!         Ok(())
+//!     }
+//!
+//!     async fn batch_delete(&self, keys: Vec<Vec<u8>>) -> Result<(), Box<dyn std::error::Error>> {
+//!         let mut data = self.data.lock().unwrap();
+//!         for key in keys {
+//!             data.remove(&key);
+//!         }
+//!         Ok(())
+//!     }
+//!
+//!     async fn range(&self, range: std::ops::Range<&[u8]>) -> Result<Vec<(Vec<u8>, Bytes)>, Box<dyn std::error::Error>> {
+//!         let data = self.data.lock().unwrap();
+//!         let mut result = Vec::new();
+//!         for (key, value) in data.iter() {
+//!             if key.as_slice() >= range.start && key.as_slice() < range.end {
+//!                 result.push((key.clone(), value.clone()));
+//!             }
+//!         }
+//!         Ok(result)
 //!     }
 //! }
 //!
@@ -37,7 +87,7 @@
 //!         duration: Duration::from_secs(60),
 //!     };
 //!
-//!     let results = stress_test(|| MyStore::new_test_store(), &config).await;
+//!     let results = stress_test(|| StressTestStore::new_test_store(), &config).await;
 //!     assert_eq!(results.errors, 0);
 //! }
 //! ```
@@ -102,20 +152,70 @@ impl Default for StressConfig {
 /// ```rust,no_run
 /// use testing::store::stress::{stress_test, StressConfig};
 /// use testing::store::TestStore;
+/// use bytes::Bytes;
+/// use std::collections::HashMap;
+/// use std::sync::{Arc, Mutex};
+/// use async_trait::async_trait;
 ///
 /// #[derive(Clone)]
-/// struct MyStore;
+/// struct StressResultsTestStore {
+///     data: Arc<Mutex<HashMap<Vec<u8>, Bytes>>>,
+/// }
 ///
-/// impl TestStore for MyStore {
+/// #[async_trait]
+/// impl TestStore for StressResultsTestStore {
 ///     fn new_test_store() -> Self {
-///         MyStore
+///         Self {
+///             data: Arc::new(Mutex::new(HashMap::new())),
+///         }
+///     }
+///
+///     async fn get(&self, key: &[u8]) -> Result<Option<Bytes>, Box<dyn std::error::Error>> {
+///         Ok(self.data.lock().unwrap().get(key).cloned())
+///     }
+///
+///     async fn set(&self, key: &[u8], value: Bytes) -> Result<(), Box<dyn std::error::Error>> {
+///         self.data.lock().unwrap().insert(key.to_vec(), value);
+///         Ok(())
+///     }
+///
+///     async fn delete(&self, key: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
+///         self.data.lock().unwrap().remove(key);
+///         Ok(())
+///     }
+///
+///     async fn batch_set(&self, kvs: Vec<(Vec<u8>, Bytes)>) -> Result<(), Box<dyn std::error::Error>> {
+///         let mut data = self.data.lock().unwrap();
+///         for (key, value) in kvs {
+///             data.insert(key, value);
+///         }
+///         Ok(())
+///     }
+///
+///     async fn batch_delete(&self, keys: Vec<Vec<u8>>) -> Result<(), Box<dyn std::error::Error>> {
+///         let mut data = self.data.lock().unwrap();
+///         for key in keys {
+///             data.remove(&key);
+///         }
+///         Ok(())
+///     }
+///
+///     async fn range(&self, range: std::ops::Range<&[u8]>) -> Result<Vec<(Vec<u8>, Bytes)>, Box<dyn std::error::Error>> {
+///         let data = self.data.lock().unwrap();
+///         let mut result = Vec::new();
+///         for (key, value) in data.iter() {
+///             if key.as_slice() >= range.start && key.as_slice() < range.end {
+///                 result.push((key.clone(), value.clone()));
+///             }
+///         }
+///         Ok(result)
 ///     }
 /// }
 ///
 /// #[tokio::test]
 /// async fn analyze_stress_results() {
 ///     let config = StressConfig::default();
-///     let results = stress_test(|| MyStore::new_test_store(), &config).await;
+///     let results = stress_test(|| StressResultsTestStore::new_test_store(), &config).await;
 ///
 ///     println!("Total operations: {}", results.total_operations);
 ///     println!("Operations/sec: {}", results.ops_per_second);
@@ -137,8 +237,8 @@ pub struct StressResults {
 
 /// Runs a stress test on a store implementation.
 ///
-/// This function creates multiple concurrent workers that perform operations
-/// on the store, measuring performance and tracking errors.
+/// This function runs a comprehensive stress test on a store implementation,
+/// measuring performance and reliability under high load.
 ///
 /// # Type Parameters
 ///
@@ -152,27 +252,85 @@ pub struct StressResults {
 ///
 /// # Returns
 ///
-/// Returns a [`StressResults`] containing metrics from the test run.
+/// Returns a [`StressResults`] containing metrics from the test.
 ///
 /// # Example
 ///
 /// ```rust,no_run
 /// use testing::store::stress::{stress_test, StressConfig};
 /// use testing::store::TestStore;
+/// use bytes::Bytes;
+/// use std::collections::HashMap;
+/// use std::sync::{Arc, Mutex};
+/// use async_trait::async_trait;
+/// use std::time::Duration;
 ///
 /// #[derive(Clone)]
-/// struct MyStore;
+/// struct StressTestFnStore {
+///     data: Arc<Mutex<HashMap<Vec<u8>, Bytes>>>,
+/// }
 ///
-/// impl TestStore for MyStore {
+/// #[async_trait]
+/// impl TestStore for StressTestFnStore {
 ///     fn new_test_store() -> Self {
-///         MyStore
+///         Self {
+///             data: Arc::new(Mutex::new(HashMap::new())),
+///         }
+///     }
+///
+///     async fn get(&self, key: &[u8]) -> Result<Option<Bytes>, Box<dyn std::error::Error>> {
+///         Ok(self.data.lock().unwrap().get(key).cloned())
+///     }
+///
+///     async fn set(&self, key: &[u8], value: Bytes) -> Result<(), Box<dyn std::error::Error>> {
+///         self.data.lock().unwrap().insert(key.to_vec(), value);
+///         Ok(())
+///     }
+///
+///     async fn delete(&self, key: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
+///         self.data.lock().unwrap().remove(key);
+///         Ok(())
+///     }
+///
+///     async fn batch_set(&self, kvs: Vec<(Vec<u8>, Bytes)>) -> Result<(), Box<dyn std::error::Error>> {
+///         let mut data = self.data.lock().unwrap();
+///         for (key, value) in kvs {
+///             data.insert(key, value);
+///         }
+///         Ok(())
+///     }
+///
+///     async fn batch_delete(&self, keys: Vec<Vec<u8>>) -> Result<(), Box<dyn std::error::Error>> {
+///         let mut data = self.data.lock().unwrap();
+///         for key in keys {
+///             data.remove(&key);
+///         }
+///         Ok(())
+///     }
+///
+///     async fn range(&self, range: std::ops::Range<&[u8]>) -> Result<Vec<(Vec<u8>, Bytes)>, Box<dyn std::error::Error>> {
+///         let data = self.data.lock().unwrap();
+///         let mut result = Vec::new();
+///         for (key, value) in data.iter() {
+///             if key.as_slice() >= range.start && key.as_slice() < range.end {
+///                 result.push((key.clone(), value.clone()));
+///             }
+///         }
+///         Ok(result)
 ///     }
 /// }
 ///
 /// #[tokio::test]
-/// async fn test_store_stress() {
-///     let config = StressConfig::default();
-///     let results = stress_test(|| MyStore::new_test_store(), &config).await;
+/// async fn test_stress_fn() {
+///     let config = StressConfig {
+///         concurrency: 10,
+///         operations_per_thread: 1000,
+///         max_key_size: 64,
+///         max_value_size: 1024,
+///         duration: Duration::from_secs(60),
+///     };
+///
+///     let results = stress_test(|| StressTestFnStore::new_test_store(), &config).await;
 ///     assert_eq!(results.errors, 0);
 /// }
 /// ```
@@ -244,6 +402,7 @@ where
 /// # Returns
 ///
 /// Returns a vector of random bytes of the specified size.
+#[cfg(test)]
 fn generate_random_data(size: usize) -> Vec<u8> {
     use rand::Rng;
     let mut rng = rand::thread_rng();

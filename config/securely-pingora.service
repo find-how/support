@@ -1,0 +1,24 @@
+[Unit]
+Description=Securely Pingora Server
+Documentation=https://github.com/cloudflare/pingora
+After=network.target
+Wants=network-online.target
+
+[Service]
+Type=forking
+User=securely
+Group=securely
+PIDFile=/var/run/securely/pingora.pid
+ExecStartPre=/usr/bin/mkdir -p /var/run/securely /var/log/securely /var/lib/securely/sled /var/lib/securely/queue
+ExecStartPre=/usr/bin/chown -R securely:securely /var/run/securely /var/log/securely /var/lib/securely
+ExecStart=/usr/local/bin/securely-pingora -d -c /etc/securely/pingora.yaml
+ExecReload=/bin/kill -QUIT $MAINPID
+ExecReload=/usr/local/bin/securely-pingora -u -d -c /etc/securely/pingora.yaml
+Restart=always
+RestartSec=5
+LimitNOFILE=1048576
+TimeoutStartSec=0
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target

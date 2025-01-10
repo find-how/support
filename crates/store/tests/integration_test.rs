@@ -5,7 +5,6 @@ use store::{
 use bytes::Bytes;
 use testing::store::{
     property::{TestStoreState, TestBatchOp},
-    TestStore,
 };
 use testing::store::property::test_kvs_strategy;
 use proptest::prelude::*;
@@ -66,7 +65,7 @@ async fn test_property_based() -> store::Result<()> {
     // Test basic operations
     let mut runner = TestRunner::default();
     let strategy = test_kvs_strategy(100);
-    let mut tree = strategy.new_tree(&mut runner).unwrap();
+    let tree = strategy.new_tree(&mut runner).unwrap();
     let kvs = tree.current();
 
     for kv in kvs {
