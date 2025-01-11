@@ -1,221 +1,307 @@
+pub mod traits;
+pub use traits::{JobHandler, Queue, Result};
+
 use async_trait::async_trait;
-use bytes::Bytes;
-use chrono::{DateTime, Utc};
-use clap::{Parser, Subcommand};
-use log::{error, info, warn};
+use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
-use serde_json;
-use sled::{Db, IVec};
-use std::collections::HashMap;
-use std::sync::Arc;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use tempfile;
-use testing;
-use tokio::sync::{mpsc, Mutex, RwLock};
-use tokio::task;
-use uuid::Uuid;
+use sled::Batch;
+use std::collections::HashSet;
+use std::any::Any;
 
-mod traits;
-pub use traits::*;
-
-// ============================
-// ==== Job Implementation ====
-// ============================
-
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Job {
-    id: String,
-    payload: String,
-    attempts: u32,
-    max_attempts: u32,
+    pub id: String,
+    pub payload: String,
+    pub attempts: u32,
+    pub max_attempts: u32,
+    pub priority: i32,
+    #[serde(with = "chrono::serde::ts_seconds")]
+    pub available_at: DateTime<Utc>,
+    #[serde(with = "chrono::serde::ts_seconds")]
+    pub created_at: DateTime<Utc>,
+    pub tags: HashSet<String>,
 }
 
 impl Job {
-    pub fn new(payload: String, max_attempts: u32) -> Self {
+    pub fn new(id: String, payload: String) -> Self {
         Self {
-            id: Uuid::new_v4().to_string(),
+            id,
             payload,
             attempts: 0,
-            max_attempts,
+            max_attempts: 3,
+            priority: 0,
+            available_at: Utc::now(),
+            created_at: Utc::now(),
+            tags: HashSet::new(),
         }
+    }
+
+    pub fn with_priority(mut self, priority: i32) -> Self {
+        self.priority = priority;
+        self
+    }
+
+    pub fn with_delay(mut self, delay: Duration) -> Self {
+        self.available_at = Utc::now() + delay;
+        self
+    }
+
+    pub fn with_tags(mut self, tags: Vec<String>) -> Self {
+        self.tags = tags.into_iter().collect();
+        self
+    }
+
+    pub fn id(&self) -> String {
+        self.id.clone()
     }
 }
 
 #[async_trait]
 impl JobHandler for Job {
-    async fn handle(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        info!("Handling job {} with payload: {}", self.id, self.payload);
-        if self.payload.contains("fail") {
-            Err("Simulated job failure.".into())
-        } else {
-            tokio::time::sleep(Duration::from_secs(2)).await;
-            Ok(())
-        }
+    fn id(&self) -> String {
+        self.id()
     }
 
-    fn id(&self) -> &str {
-        &self.id
+    async fn handle(&self) -> Result<()> {
+        println!("Handling job {} with payload {}", self.id, self.payload);
+        Ok(())
     }
 
-    fn payload(&self) -> &str {
-        &self.payload
-    }
-
-    fn attempts(&self) -> u32 {
-        self.attempts
-    }
-
-    fn max_attempts(&self) -> u32 {
-        self.max_attempts
-    }
-
-    fn increment_attempts(&mut self) {
-        self.attempts += 1;
+    fn as_any(&self) -> &dyn Any {
+        self
     }
 }
 
-// ============================
-// ==== SledQueue Implementation
-// ============================
-
-#[derive(Clone)]
 pub struct SledQueueImpl {
-    db: Arc<Db>,
+    db: sled::Db,
     queue_name: String,
-    lock: Arc<Mutex<()>>,
+}
+
+impl Clone for SledQueueImpl {
+    fn clone(&self) -> Self {
+        Self {
+            db: self.db.clone(),
+            queue_name: self.queue_name.clone(),
+        }
+    }
 }
 
 impl SledQueueImpl {
-    pub fn new(db: Db, queue_name: &str) -> Self {
-        Self {
-            db: Arc::new(db),
-            queue_name: queue_name.into(),
-            lock: Arc::new(Mutex::new(())),
-        }
+    pub fn new(queue_name: String, db_path: String) -> Result<Self> {
+        let db = sled::open(db_path)?;
+        Ok(Self {
+            db,
+            queue_name,
+        })
     }
 
-    pub fn new_test_queue() -> Self {
-        let temp_dir = tempfile::tempdir().unwrap();
-        let db = sled::open(temp_dir.path()).unwrap();
-        Self::new(db, "test-queue")
+    fn make_job_key(&self, job: &Job) -> String {
+        format!("{}:jobs:{}:{}:{}",
+            self.queue_name,
+            -job.priority,
+            job.available_at.timestamp_millis(),
+            job.id
+        )
+    }
+
+    fn make_prefix(&self) -> String {
+        format!("{}:jobs:", self.queue_name)
+    }
+
+    fn make_failed_key(&self, job_id: &str) -> String {
+        format!("{}:failed:{}", self.queue_name, job_id)
+    }
+
+    async fn find_job_by_id(&self, job_id: &str) -> Result<Option<(sled::IVec, Job)>> {
+        let prefix = self.make_prefix();
+        println!("Scanning for job {} with prefix {}", job_id, prefix);
+        for result in self.db.scan_prefix(prefix.as_bytes()) {
+            let (key, value) = result?;
+            let job: Job = serde_json::from_slice(&value)?;
+            println!("Found job with id: {} at key {:?}", job.id, key);
+            if job.id == job_id {
+                println!("Found matching job: {:?}", job);
+                return Ok(Some((key, job)));
+            }
+        }
+        println!("No job found with id: {}", job_id);
+        Ok(None)
+    }
+
+    async fn serialize_job(&self, job: &Job) -> Result<Vec<u8>> {
+        Ok(serde_json::to_vec(&job)?)
     }
 }
 
 #[async_trait]
 impl Queue for SledQueueImpl {
-    async fn push(&self, job: Box<dyn JobHandler>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let key = format!("{}/{}", self.queue_name, timestamp);
-
-        // Serialize job data
-        let job_data = serde_json::to_vec(&Job {
-            id: job.id().to_string(),
-            payload: job.payload().to_string(),
-            attempts: job.attempts(),
-            max_attempts: job.max_attempts(),
-        })?;
-
-        self.db.insert(key, job_data)?;
-        self.db.flush()?;
+    async fn push(&self, job: Box<dyn JobHandler>) -> Result<()> {
+        let job = job.as_any().downcast_ref::<Job>().ok_or("Invalid job type")?;
+        let key = self.make_job_key(job);
+        let value = self.serialize_job(job).await?;
+        self.db.insert(key.as_bytes(), value)?;
         Ok(())
     }
 
-    async fn pop(&self) -> Result<Option<Box<dyn JobHandler>>, Box<dyn std::error::Error + Send + Sync>> {
-        let _guard = self.lock.lock().await;
-        let prefix = format!("{}/", self.queue_name);
-        let mut iter = self.db.scan_prefix(&prefix).keys();
+    async fn push_bulk(&self, jobs: Vec<Box<dyn JobHandler>>) -> Result<()> {
+        let mut batch = Batch::default();
+        for job in jobs {
+            let job = job.as_any().downcast_ref::<Job>().ok_or("Invalid job type")?;
+            let key = self.make_job_key(job);
+            let value = self.serialize_job(job).await?;
+            batch.insert(key.as_bytes(), value);
+        }
+        self.db.apply_batch(batch)?;
+        Ok(())
+    }
 
-        if let Some(Ok(first_key)) = iter.next() {
-            let key_str = String::from_utf8(first_key.to_vec())?;
-            if let Some(value) = self.db.remove(&key_str)? {
-                let job: Job = serde_json::from_slice(&value)?;
+    async fn pop(&self) -> Result<Option<Box<dyn JobHandler>>> {
+        let now = Utc::now();
+        let prefix = self.make_prefix();
+
+        println!("Scanning queue with prefix: {}", prefix);
+        for res in self.db.scan_prefix(prefix.as_bytes()) {
+            let (key, value) = res?;
+            let key_str = String::from_utf8_lossy(&key);
+            println!("Found key: {}", key_str);
+
+            let job: Job = serde_json::from_slice(&value)?;
+            println!("Job available_at: {}, now: {}", job.available_at, now);
+
+            if job.available_at <= now {
+                self.db.remove(&key)?;
+                println!("Popping job: {:?}", job);
                 return Ok(Some(Box::new(job)));
             }
         }
-
+        println!("No available jobs found");
         Ok(None)
     }
 
-    async fn peek(&self) -> Result<Option<Box<dyn JobHandler>>, Box<dyn std::error::Error + Send + Sync>> {
-        let prefix = format!("{}/", self.queue_name);
-        let mut iter = self.db.scan_prefix(&prefix);
-
-        if let Some(Ok((_, value))) = iter.next() {
-            let job: Job = serde_json::from_slice(&value)?;
-            return Ok(Some(Box::new(job)));
-        }
-
-        Ok(None)
-    }
-
-    async fn size(&self) -> usize {
-        let prefix = format!("{}/", self.queue_name);
-        self.db.scan_prefix(&prefix).count()
-    }
-
-    async fn complete(&self, _job_id: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        // Jobs are automatically removed when popped
-        Ok(())
-    }
-
-    async fn fail(&self, job_id: &str, error: String) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let failed_key = format!("{}/failed/{}", self.queue_name, job_id);
-        let failed_job = FailedJob {
-            id: job_id.to_string(),
-            connection: "default".to_string(),
-            queue: self.queue_name.clone(),
-            payload: "".to_string(), // TODO: Get from original job
-            exception: error,
-            failed_at: Utc::now().to_rfc3339(),
-        };
-
-        let serialized = serde_json::to_vec(&failed_job)?;
-        self.db.insert(failed_key, serialized)?;
-        self.db.flush()?;
-        Ok(())
-    }
-
-    async fn get_failed(&self) -> Result<Vec<(Box<dyn JobHandler>, String)>, Box<dyn std::error::Error + Send + Sync>> {
-        let prefix = format!("{}/failed/", self.queue_name);
-        let mut failed_jobs = Vec::new();
-
-        for result in self.db.scan_prefix(&prefix) {
+    async fn peek(&self) -> Result<Option<Box<dyn JobHandler>>> {
+        let now = Utc::now();
+        let prefix = self.make_prefix();
+        for result in self.db.scan_prefix(prefix.as_bytes()) {
             let (_, value) = result?;
-            let failed_job: FailedJob = serde_json::from_slice(&value)?;
-            let job = Job::new(failed_job.payload, 3); // TODO: Use original max_attempts
-            failed_jobs.push((Box::new(job) as Box<dyn JobHandler>, failed_job.exception));
+            let job: Job = serde_json::from_slice(&value)?;
+            if job.available_at <= now {
+                return Ok(Some(Box::new(job)));
+            }
         }
-
-        Ok(failed_jobs)
+        Ok(None)
     }
 
-    async fn retry(&self, job_id: &str) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
-        let failed_key = format!("{}/failed/{}", self.queue_name, job_id);
+    async fn size(&self) -> Result<usize> {
+        let prefix = self.make_prefix();
+        Ok(self.db.scan_prefix(prefix.as_bytes()).count())
+    }
 
-        if let Some(failed_data) = self.db.remove(failed_key)? {
-            let failed_job: FailedJob = serde_json::from_slice(&failed_data)?;
-            let job = Job::new(failed_job.payload, 3); // Reset attempts
-            self.push(Box::new(job)).await?;
-            return Ok(true);
+    async fn complete(&self, job_id: &str) -> Result<()> {
+        if let Some((key, _)) = self.find_job_by_id(job_id).await? {
+            self.db.remove(key)?;
         }
+        Ok(())
+    }
 
-        Ok(false)
+    async fn fail(&self, job_id: &str, error: String) -> Result<()> {
+        println!("Attempting to fail job with id: {}", job_id);
+
+        if let Some((key, mut job)) = self.find_job_by_id(job_id).await? {
+            println!("Found job to fail: {:?} at key {:?}", job, key);
+
+            // Increment attempts
+            job.attempts += 1;
+
+            // Prepare batch operations
+            let mut batch = Batch::default();
+            batch.remove(&key);
+
+            if job.attempts >= job.max_attempts {
+                println!("Job exceeded max attempts, moving to failed queue");
+                let failed_key = self.make_failed_key(job_id);
+                let failed_value = serde_json::to_vec(&(job, error))?;
+                batch.insert(failed_key.as_bytes(), failed_value);
+            } else {
+                // Calculate backoff delay
+                let backoff = Duration::seconds(2i64.pow(job.attempts));
+                job.available_at = Utc::now() + backoff;
+                println!("New available_at: {}", job.available_at);
+
+                // Generate new key with updated available_at
+                let new_key = self.make_job_key(&job);
+                println!("Inserting job at new key: {}", new_key);
+
+                // Add to batch
+                let serialized = serde_json::to_vec(&job)?;
+                batch.insert(new_key.as_bytes(), serialized);
+                println!("Job re-added with backoff");
+            }
+
+            // Apply all operations atomically
+            self.db.apply_batch(batch)?;
+            println!("Job updated successfully");
+            Ok(())
+        } else {
+            println!("No job found to fail with id: {}", job_id);
+            println!("Current jobs in queue:");
+            for result in self.db.scan_prefix(self.make_prefix().as_bytes()) {
+                let (key, value) = result?;
+                let job: Job = serde_json::from_slice(&value)?;
+                println!("Key: {:?}, Job: {:?}", key, job);
+            }
+            Ok(())
+        }
+    }
+
+    async fn get_failed(&self) -> Result<Vec<(Box<dyn JobHandler>, String)>> {
+        let prefix = format!("{}:failed:", self.queue_name);
+        let mut failed = Vec::new();
+        for result in self.db.scan_prefix(prefix.as_bytes()) {
+            let (_, value) = result?;
+            let (job, error): (Job, String) = serde_json::from_slice(&value)?;
+            failed.push((Box::new(job) as Box<dyn JobHandler>, error));
+        }
+        Ok(failed)
+    }
+
+    async fn retry(&self, job_id: &str) -> Result<bool> {
+        let failed_key = self.make_failed_key(job_id);
+        if let Some(value) = self.db.get(failed_key.as_bytes())? {
+            let (mut job, _): (Job, String) = serde_json::from_slice(&value)?;
+            job.attempts = 0;
+            job.available_at = Utc::now();
+            let key = self.make_job_key(&job);
+            let value = self.serialize_job(&job).await?;
+            self.db.insert(key.as_bytes(), value)?;
+            self.db.remove(failed_key.as_bytes())?;
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+
+    async fn get_by_tag(&self, tag: &str) -> Result<Vec<Box<dyn JobHandler>>> {
+        let prefix = self.make_prefix();
+        let mut tagged_jobs = Vec::new();
+        for result in self.db.scan_prefix(prefix.as_bytes()) {
+            let (_, value) = result?;
+            let job: Job = serde_json::from_slice(&value)?;
+            if job.tags.contains(tag) {
+                tagged_jobs.push(Box::new(job) as Box<dyn JobHandler>);
+            }
+        }
+        Ok(tagged_jobs)
+    }
+
+    async fn clear(&self) -> Result<()> {
+        let prefix = self.make_prefix();
+        for result in self.db.scan_prefix(prefix.as_bytes()) {
+            let (key, _) = result?;
+            self.db.remove(key)?;
+        }
+        Ok(())
     }
 }
 
-// ============================
-// ==== Failed Job Structure ==
-// ============================
-
-#[derive(Serialize, Deserialize, Debug)]
-struct FailedJob {
-    id: String,
-    connection: String,
-    queue: String,
-    payload: String,
-    exception: String,
-    failed_at: String,
-}
+#[cfg(test)]
+mod tests;

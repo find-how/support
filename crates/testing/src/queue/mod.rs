@@ -1,88 +1,73 @@
 use async_trait::async_trait;
-use bytes::Bytes;
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
-
-pub mod bench;
-pub mod property;
-
-pub use bench::{bench_queue, QueueBenchConfig, QueueBenchResults};
-pub use property::{test_queue_operations, test_queue_strategy, QueueOp, QueueState};
+use std::collections::VecDeque;
+use std::sync::Arc;
+use tokio::sync::Mutex;
 
 #[async_trait]
-pub trait TestQueue: Send + Sync + Clone {
-    fn new_test_queue() -> Self where Self: Sized;
-    async fn push(&self, payload: Bytes) -> bool;
-    async fn pop(&self) -> Option<(String, Bytes)>;
-    async fn size(&self) -> usize;
-    async fn complete(&self, id: &str) -> bool;
-    async fn fail(&self, id: &str) -> bool;
-    async fn get_failed(&self) -> Vec<(String, Bytes)>;
-    async fn retry(&self, id: &str) -> bool;
+pub trait Queue: Send + Sync {
+    async fn push(&self, data: Vec<u8>) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
+    async fn pop(&self) -> Result<Option<Vec<u8>>, Box<dyn std::error::Error + Send + Sync>>;
+    async fn len(&self) -> Result<usize, Box<dyn std::error::Error + Send + Sync>>;
+    async fn is_empty(&self) -> Result<bool, Box<dyn std::error::Error + Send + Sync>>;
+    async fn clear(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
 }
 
 #[derive(Clone)]
 pub struct MockQueue {
-    jobs: Arc<Mutex<Vec<(String, Bytes)>>>,
-    failed: Arc<Mutex<HashMap<String, Bytes>>>,
+    items: Arc<Mutex<VecDeque<Vec<u8>>>>,
 }
 
 impl MockQueue {
     pub fn new() -> Self {
         Self {
-            jobs: Arc::new(Mutex::new(Vec::new())),
-            failed: Arc::new(Mutex::new(HashMap::new())),
+            items: Arc::new(Mutex::new(VecDeque::new())),
         }
+    }
+
+    pub fn new_test_queue() -> Self {
+        Self::new()
     }
 }
 
 #[async_trait]
-impl TestQueue for MockQueue {
-    fn new_test_queue() -> Self {
-        Self::new()
+impl Queue for MockQueue {
+    async fn push(&self, data: Vec<u8>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        self.items.lock().await.push_back(data);
+        Ok(())
     }
 
-    async fn push(&self, payload: Bytes) -> bool {
-        let id = uuid::Uuid::new_v4().to_string();
-        self.jobs.lock().unwrap().push((id, payload));
-        true
+    async fn pop(&self) -> Result<Option<Vec<u8>>, Box<dyn std::error::Error + Send + Sync>> {
+        Ok(self.items.lock().await.pop_front())
     }
 
-    async fn pop(&self) -> Option<(String, Bytes)> {
-        self.jobs.lock().unwrap().pop()
+    async fn len(&self) -> Result<usize, Box<dyn std::error::Error + Send + Sync>> {
+        Ok(self.items.lock().await.len())
     }
 
-    async fn size(&self) -> usize {
-        self.jobs.lock().unwrap().len()
+    async fn is_empty(&self) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
+        Ok(self.items.lock().await.is_empty())
     }
 
-    async fn complete(&self, _id: &str) -> bool {
-        true
+    async fn clear(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        self.items.lock().await.clear();
+        Ok(())
     }
+}
 
-    async fn fail(&self, id: &str) -> bool {
-        if let Some(pos) = self.jobs.lock().unwrap().iter().position(|(jid, _)| jid == id) {
-            let (_, payload) = self.jobs.lock().unwrap().remove(pos);
-            self.failed.lock().unwrap().insert(id.to_string(), payload);
-            true
-        } else {
-            false
-        }
-    }
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-    async fn get_failed(&self) -> Vec<(String, Bytes)> {
-        self.failed.lock().unwrap()
-            .iter()
-            .map(|(id, payload)| (id.clone(), payload.clone()))
-            .collect()
-    }
+    #[tokio::test]
+    async fn test_mock_queue() {
+        let queue = MockQueue::new();
+        assert!(queue.is_empty().await.unwrap());
 
-    async fn retry(&self, id: &str) -> bool {
-        if let Some(payload) = self.failed.lock().unwrap().remove(id) {
-            self.jobs.lock().unwrap().push((id.to_string(), payload));
-            true
-        } else {
-            false
-        }
+        queue.push(vec![1, 2, 3]).await.unwrap();
+        assert_eq!(queue.len().await.unwrap(), 1);
+
+        let item = queue.pop().await.unwrap().unwrap();
+        assert_eq!(item, vec![1, 2, 3]);
+        assert!(queue.is_empty().await.unwrap());
     }
 }

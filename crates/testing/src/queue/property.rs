@@ -1,102 +1,106 @@
-use crate::queue::{TestQueue, MockQueue};
+use super::MockQueue;
 use proptest::prelude::*;
+use std::collections::HashMap;
+use std::sync::Arc;
+use tokio::sync::Mutex;
 
 #[derive(Debug, Clone)]
 pub enum QueueOp {
     Push(Vec<u8>),
     Pop,
-    Complete(String),
-    Fail(String),
-    Retry(String),
-}
-
-impl Arbitrary for QueueOp {
-    type Parameters = ();
-    type Strategy = BoxedStrategy<Self>;
-
-    fn arbitrary_with(_args: Self::Parameters) -> Self::Strategy {
-        prop_oneof![
-            any::<Vec<u8>>().prop_map(QueueOp::Push),
-            Just(QueueOp::Pop),
-            any::<String>().prop_map(QueueOp::Complete),
-            any::<String>().prop_map(QueueOp::Fail),
-            any::<String>().prop_map(QueueOp::Retry)
-        ].boxed()
-    }
+    Clear,
 }
 
 #[derive(Debug, Clone)]
 pub struct QueueState {
-    pub size: usize,
-    pub failed: Vec<(String, Vec<u8>)>,
+    items: Arc<Mutex<HashMap<String, Vec<u8>>>>,
 }
 
-pub async fn test_queue_operations<Q: TestQueue>(queue: &Q, ops: Vec<QueueOp>) -> QueueState {
-    let mut state = QueueState {
-        size: 0,
-        failed: Vec::new(),
-    };
+impl QueueState {
+    pub fn new() -> Self {
+        Self {
+            items: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
 
-    for op in ops {
+    pub async fn apply(&mut self, op: QueueOp) -> bool {
         match op {
-            QueueOp::Push(payload) => {
-                queue.push(payload.into()).await;
-                state.size = queue.size().await;
+            QueueOp::Push(data) => {
+                let id = uuid::Uuid::new_v4().to_string();
+                self.items.lock().await.insert(id, data);
+                true
             }
             QueueOp::Pop => {
-                if queue.pop().await.is_some() {
-                    state.size = queue.size().await;
+                if let Some((id, _)) = self.items.lock().await.iter().next() {
+                    self.items.lock().await.remove(&id.clone());
+                    true
+                } else {
+                    false
                 }
             }
-            QueueOp::Complete(id) => {
-                if queue.complete(&id).await {
-                    state.size = queue.size().await;
+            QueueOp::Clear => {
+                self.items.lock().await.clear();
+                true
+            }
+        }
+    }
+}
+
+pub fn test_queue_strategy() -> impl Strategy<Value = Vec<QueueOp>> {
+    prop::collection::vec(
+        prop_oneof![
+            prop::collection::vec(any::<u8>(), 0..100).prop_map(QueueOp::Push),
+            Just(QueueOp::Pop),
+            Just(QueueOp::Clear),
+        ],
+        0..100,
+    )
+}
+
+pub async fn test_queue_operations(ops: Vec<QueueOp>) -> bool {
+    let queue = MockQueue::new();
+    let mut state = QueueState::new();
+
+    for op in ops {
+        match op.clone() {
+            QueueOp::Push(data) => {
+                let queue_result = queue.push(data.clone()).await.is_ok();
+                let state_result = state.apply(op).await;
+                if queue_result != state_result {
+                    return false;
                 }
             }
-            QueueOp::Fail(id) => {
-                if queue.fail(&id).await {
-                    state.size = queue.size().await;
-                    if let Some(job) = queue.pop().await {
-                        state.failed.push((job.0, job.1.to_vec()));
-                        state.size = queue.size().await;
-                    }
+            QueueOp::Pop => {
+                let queue_result = queue.pop().await.unwrap().is_some();
+                let state_result = state.apply(op).await;
+                if queue_result != state_result {
+                    return false;
                 }
             }
-            QueueOp::Retry(id) => {
-                if queue.retry(&id).await {
-                    state.size = queue.size().await;
+            QueueOp::Clear => {
+                let queue_result = queue.clear().await.is_ok();
+                let state_result = state.apply(op).await;
+                if !queue_result || !state_result {
+                    return false;
                 }
             }
         }
     }
 
-    state
+    true
 }
 
-pub fn test_queue_strategy() -> impl Strategy<Value = Vec<QueueOp>> {
-    prop::collection::vec(any::<QueueOp>(), 0..100)
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-proptest! {
-    #[test]
-    fn test_queue_properties(ops in test_queue_strategy()) {
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        rt.block_on(async {
-            let queue = MockQueue::new_test_queue();
-            let state = test_queue_operations(&queue, ops).await;
-
-            // Verify queue state
-            assert_eq!(queue.size().await, state.size);
-            let failed = queue.get_failed().await;
-            assert_eq!(failed.len(), state.failed.len());
-
-            // Verify each failed job matches
-            for (id, payload) in state.failed {
-                let found = failed.iter().any(|(fid, fpayload)| {
-                    *fid == id && fpayload.to_vec() == payload
-                });
-                assert!(found, "Failed job not found in queue");
-            }
-        });
+    proptest! {
+        #[test]
+        fn test_queue_operations_prop(ops in test_queue_strategy()) {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            rt.block_on(async {
+                assert!(test_queue_operations(ops).await);
+            });
+        }
     }
 }
