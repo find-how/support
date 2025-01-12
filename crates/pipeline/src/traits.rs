@@ -22,14 +22,17 @@ pub trait PipelineBuilder<T>: Send + Sync {
 
 /// A pipeline that can process a value
 #[async_trait]
-pub trait Pipeline<T>: Send + Sync {
+pub trait Pipeline<T: Send + Sync>: Send + Sync {
     /// Run the pipeline with a final destination callback
     async fn run_with_callback(&mut self, destination: Box<dyn FnOnce(T) -> Pin<Box<dyn Future<Output = T> + Send>> + Send>) -> T;
+
+    /// Set the traveler object being sent on the pipeline
+    fn send(&mut self, traveler: T);
 }
 
 /// A stop in the pipeline that can process the traveling value
 #[async_trait]
-pub trait PipelineStop<T>: Send + Sync {
+pub trait PipelineStop<T: Send + Sync>: Send + Sync {
     /// Process the value and pass it to the next stop
     async fn process(
         &self,
@@ -42,7 +45,5 @@ pub trait PipelineStop<T>: Send + Sync {
 #[async_trait]
 pub trait Hub: Send + Sync {
     /// Send an object through one of the available pipelines
-    async fn pipe<T>(&mut self, object: T, pipeline: Option<&str>) -> T
-    where
-        T: Send + Sync + 'static;
+    async fn pipe<T: 'static + Send + Sync>(&mut self, object: T, pipeline: Option<&str>) -> T;
 }

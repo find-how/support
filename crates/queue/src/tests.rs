@@ -91,22 +91,28 @@ async fn test_job_tags() -> Result<()> {
 
 #[tokio::test]
 async fn test_retry_with_backoff() -> Result<()> {
-    let queue = SledQueueImpl::new("test_retry".to_string(), "test_retry.db".to_string())?;
-    let job = Box::new(Job::new("retry".to_string(), "test".to_string()));
-    let job_id = job.id.clone();
-    queue.push(job).await?;
+    let mut queue = SledQueueImpl::new("test".to_string(), "test.db".to_string())?;
+    queue.clear().await?;
 
-    let some_job = queue.pop().await?;
-    assert!(some_job.is_some());
+    let job_id = "test_job".to_string();
+    let job = Job::new(job_id.clone(), "test payload".to_string());
 
-    queue.fail(&job_id, "test error".into()).await?;
+    // Push the job to the queue
+    queue.push(Box::new(job)).await?;
 
-    println!("Waiting for backoff...");
-    sleep(StdDuration::from_secs(3)).await;
-    println!("Done waiting");
+    // Pop the job and verify it's the one we pushed
+    let popped = queue.pop().await?.unwrap();
+    assert_eq!(popped.id(), job_id);
 
-    let some_job = queue.pop().await?;
-    assert!(some_job.is_some());
+    // Fail the job with an error message
+    queue.fail(&job_id, "test error".to_string()).await?;
+
+    // Wait for backoff (2^1 = 2 seconds for first failure)
+    sleep(StdDuration::from_secs(4)).await;
+
+    // Job should be available again
+    let popped = queue.pop().await?.unwrap();
+    assert_eq!(popped.id(), job_id);
 
     Ok(())
 }

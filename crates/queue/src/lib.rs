@@ -20,6 +20,7 @@ pub struct Job {
     #[serde(with = "chrono::serde::ts_seconds")]
     pub created_at: DateTime<Utc>,
     pub tags: HashSet<String>,
+    pub in_progress: bool,
 }
 
 impl Job {
@@ -33,6 +34,7 @@ impl Job {
             available_at: Utc::now(),
             created_at: Utc::now(),
             tags: HashSet::new(),
+            in_progress: false,
         }
     }
 
@@ -165,11 +167,13 @@ impl Queue for SledQueueImpl {
             let key_str = String::from_utf8_lossy(&key);
             println!("Found key: {}", key_str);
 
-            let job: Job = serde_json::from_slice(&value)?;
+            let mut job: Job = serde_json::from_slice(&value)?;
             println!("Job available_at: {}, now: {}", job.available_at, now);
 
-            if job.available_at <= now {
-                self.db.remove(&key)?;
+            if job.available_at <= now && !job.in_progress {
+                job.in_progress = true;
+                let serialized = serde_json::to_vec(&job)?;
+                self.db.insert(&key, serialized)?;
                 println!("Popping job: {:?}", job);
                 return Ok(Some(Box::new(job)));
             }
@@ -211,6 +215,7 @@ impl Queue for SledQueueImpl {
 
             // Increment attempts
             job.attempts += 1;
+            job.in_progress = false;
 
             // Prepare batch operations
             let mut batch = Batch::default();

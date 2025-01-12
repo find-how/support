@@ -1,6 +1,10 @@
 pub mod queue;
 pub use queue::Queue;
 
+pub mod store;
+pub mod encrypt;
+pub mod settings;
+
 #[cfg(test)]
 mod tests {
     use super::*;
