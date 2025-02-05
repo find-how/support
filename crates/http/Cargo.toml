@@ -1,0 +1,37 @@
+[package]
+name = "http"
+version = "0.1.0"
+edition = "2021"
+description = "HTTP client and server with Laravel-inspired patterns"
+license = "MIT"
+
+[dependencies]
+# Core dependencies
+thiserror = "1.0"
+reqwest = { version = "0.11", features = ["json"] }
+futures = "0.3"
+tokio = { version = "1.0", features = ["full"] }
+async-trait = "0.1"
+regex = "1.0"
+log = "0.4"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tracing = "0.1"
+bytes = "1.0"
+
+# Workspace dependencies
+config = { path = "../config" }
+encrypt = { path = "../encrypt" }
+store = { path = "../store" }
+
+[dev-dependencies]
+tokio = { version = "1.0", features = ["full", "test-util"] }
+mockall = "0.11"
+test-case = "3.0"
+criterion = "0.5"
+tokio-test = "0.4"
+pretty_assertions = "1.4"
+
+[[bench]]
+name = "http_facade"
+harness = false

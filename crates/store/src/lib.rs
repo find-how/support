@@ -68,36 +68,22 @@ pub trait BatchStore: Store {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use testing::store::TestStore;
+    use crate::backends::memory::MemoryStore;
 
-    #[async_trait::async_trait]
-    impl TestStore for backends::sled::SledStore {
-        fn new_test_store() -> Self {
-            Self::new_test_store()
-        }
+    #[tokio::test]
+    async fn test_memory_store() {
+        let store = MemoryStore::new();
+        let key = b"test-key".to_vec();
+        let value = Bytes::from("test-value");
 
-        async fn get(&self, key: &[u8]) -> std::result::Result<Option<Bytes>, Box<dyn std::error::Error>> {
-            Ok(Store::get(self, key).await?)
-        }
+        // Test set and get
+        store.set(&key, value.clone()).await.unwrap();
+        let result = store.get(&key).await.unwrap();
+        assert_eq!(result, Some(value));
 
-        async fn set(&self, key: &[u8], value: Bytes) -> std::result::Result<(), Box<dyn std::error::Error>> {
-            Ok(Store::set(self, key, value).await?)
-        }
-
-        async fn delete(&self, key: &[u8]) -> std::result::Result<(), Box<dyn std::error::Error>> {
-            Ok(Store::delete(self, key).await?)
-        }
-
-        async fn batch_set(&self, kvs: Vec<(Vec<u8>, Bytes)>) -> std::result::Result<(), Box<dyn std::error::Error>> {
-            Ok(Store::batch_set(self, kvs).await?)
-        }
-
-        async fn batch_delete(&self, keys: Vec<Vec<u8>>) -> std::result::Result<(), Box<dyn std::error::Error>> {
-            Ok(Store::batch_delete(self, keys).await?)
-        }
-
-        async fn range(&self, range: std::ops::Range<&[u8]>) -> std::result::Result<Vec<(Vec<u8>, Bytes)>, Box<dyn std::error::Error>> {
-            Ok(Store::range(self, range).await?)
-        }
+        // Test delete
+        store.delete(&key).await.unwrap();
+        let result = store.get(&key).await.unwrap();
+        assert_eq!(result, None);
     }
 }

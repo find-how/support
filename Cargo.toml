@@ -1,20 +1,22 @@
+# Root workspace Cargo.toml
 [workspace]
+resolver = "2"
 members = [
+	"crates/cache",
 	"crates/config",
 	"crates/encrypt",
+	"crates/http",
 	"crates/pipeline",
+	"crates/process",
 	"crates/queue",
 	"crates/settings",
 	"crates/store",
+	"crates/strings",
 	"crates/testing",
 	"crates/workflows",
 ]
-resolver = "2"
 
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
-repository = "https://github.com/find-how/support"
-documentation = "https://docs.rs/support"
-homepage = "https://github.com/find-how/support"

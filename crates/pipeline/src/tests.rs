@@ -1,91 +1,83 @@
-use std::future::Future;
+use std::sync::Arc;
+use async_trait::async_trait;
+use futures::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use async_trait::async_trait;
-use crate::{Pipeline, PipelineStop, BasePipeline, BaseHub};
+use crate::{PipelineStop, BasePipeline, Pipeline};
 use std::any::Any;
-use std::sync::Arc;
 
 #[derive(Clone)]
-pub struct AddPrefixStop {
+struct AddPrefixStop {
     prefix: String,
 }
 
+impl AddPrefixStop {
+    fn new(prefix: &str) -> Self {
+        Self {
+            prefix: prefix.to_string(),
+        }
+    }
+}
+
 #[async_trait]
-impl PipelineStop<Box<dyn Any + Send + Sync>> for AddPrefixStop {
-    async fn process(
-        &self,
-        traveler: Box<dyn Any + Send + Sync>,
-        next: Box<dyn FnOnce(Box<dyn Any + Send + Sync>) -> Pin<Box<dyn Future<Output = Box<dyn Any + Send + Sync>> + Send>> + Send>,
-    ) -> Box<dyn Any + Send + Sync> {
-        let string = traveler.downcast::<String>().expect("Expected String");
-        let result = format!("{}{}", self.prefix, *string);
-        next(Box::new(result)).await
+impl PipelineStop<String> for AddPrefixStop {
+    async fn process(&self, traveler: String, next: Box<dyn FnOnce(String) -> Pin<Box<dyn Future<Output = String> + Send>> + Send>) -> String {
+        let result = format!("{}{}", self.prefix, traveler);
+        next(result).await
     }
 }
 
 #[derive(Clone)]
-pub struct TrackingStop {
-    count: Arc<AtomicUsize>,
+struct TrackingStop {
+    count: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 impl TrackingStop {
-    pub fn new() -> Self {
+    fn new() -> Self {
         Self {
-            count: Arc::new(AtomicUsize::new(0)),
+            count: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         }
-    }
-
-    pub fn count(&self) -> usize {
-        self.count.load(Ordering::SeqCst)
     }
 }
 
 #[async_trait]
 impl PipelineStop<Box<dyn Any + Send + Sync>> for TrackingStop {
-    async fn process(
-        &self,
-        traveler: Box<dyn Any + Send + Sync>,
-        next: Box<dyn FnOnce(Box<dyn Any + Send + Sync>) -> Pin<Box<dyn Future<Output = Box<dyn Any + Send + Sync>> + Send>> + Send>,
-    ) -> Box<dyn Any + Send + Sync> {
-        self.count.fetch_add(1, Ordering::SeqCst);
-        next(traveler).await
+    async fn process(&self, traveler: Box<dyn Any + Send + Sync>) -> Box<dyn Any + Send + Sync> {
+        self.count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        traveler
     }
 }
 
 #[derive(Clone)]
-pub struct ValidatingStop;
+struct ValidatingStop;
 
 #[async_trait]
 impl PipelineStop<Box<dyn Any + Send + Sync>> for ValidatingStop {
-    async fn process(
-        &self,
-        traveler: Box<dyn Any + Send + Sync>,
-        next: Box<dyn FnOnce(Box<dyn Any + Send + Sync>) -> Pin<Box<dyn Future<Output = Box<dyn Any + Send + Sync>> + Send>> + Send>,
-    ) -> Box<dyn Any + Send + Sync> {
-        let string = traveler.downcast::<String>().expect("Expected String");
-        if string.len() < 3 {
-            panic!("String too short");
+    async fn process(&self, traveler: Box<dyn Any + Send + Sync>) -> Box<dyn Any + Send + Sync> {
+        if let Ok(string) = traveler.downcast::<String>() {
+            if string.is_empty() {
+                panic!("Empty string not allowed");
+            }
+            Box::new(*string)
+        } else {
+            panic!("Expected String");
         }
-        next(Box::new((*string).clone())).await
     }
 }
 
 #[derive(Clone)]
-pub struct MethodAwareStop {
+struct MethodAwareStop {
     method: String,
 }
 
 #[async_trait]
 impl PipelineStop<Box<dyn Any + Send + Sync>> for MethodAwareStop {
-    async fn process(
-        &self,
-        traveler: Box<dyn Any + Send + Sync>,
-        next: Box<dyn FnOnce(Box<dyn Any + Send + Sync>) -> Pin<Box<dyn Future<Output = Box<dyn Any + Send + Sync>> + Send>> + Send>,
-    ) -> Box<dyn Any + Send + Sync> {
-        let string = traveler.downcast::<String>().expect("Expected String");
-        let result = format!("{} {}", self.method, *string);
-        next(Box::new(result)).await
+    async fn process(&self, traveler: Box<dyn Any + Send + Sync>) -> Box<dyn Any + Send + Sync> {
+        if let Ok(string) = traveler.downcast::<String>() {
+            Box::new(format!("{} {}", self.method, *string))
+        } else {
+            panic!("Expected String");
+        }
     }
 }
 
@@ -96,53 +88,61 @@ mod tests {
 
     #[tokio::test]
     async fn test_basic_pipeline() {
-        let mut pipeline = BasePipeline::new()
-            .send(Box::new("world".to_string()) as Box<dyn Any + Send + Sync>)
-            .through(Box::new(AddPrefixStop { prefix: "hello ".to_string() }))
-            .build();
+        let mut pipeline = BasePipeline::new();
+        pipeline.stops.push(Box::new(AddPrefixStop::new("Hello ")));
+
+        pipeline.send("World".to_string());
 
         let result = pipeline.run_with_callback(Box::new(|t| Box::pin(async move { t }))).await;
-        let string = result.downcast::<String>().expect("Expected String");
-        assert_eq!(*string, "hello world");
+        assert_eq!(result, "Hello World");
     }
 
     #[tokio::test]
-    async fn test_tracking_stop() {
-        let tracking_stop = TrackingStop::new();
-        let tracking_stop_clone = tracking_stop.clone();
+    async fn test_tracking_pipeline() {
+        let mut pipeline = BasePipeline::new();
+        let tracking_stop = Arc::new(TrackingStop::new());
+        pipeline.add_stop(tracking_stop.clone());
 
-        let mut pipeline = BasePipeline::new()
-            .send(Box::new("world".to_string()) as Box<dyn Any + Send + Sync>)
-            .through(Box::new(tracking_stop))
-            .build();
+        pipeline.send(Box::new("test".to_string()) as Box<dyn Any + Send + Sync>);
 
-        let result = pipeline.run_with_callback(Box::new(|t| Box::pin(async move { t }))).await;
+        let result = pipeline.process().await;
         let string = result.downcast::<String>().expect("Expected String");
-        assert_eq!(*string, "world");
-        assert_eq!(tracking_stop_clone.count(), 1);
+        assert_eq!(*string, "test");
+        assert_eq!(tracking_stop.count.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 
     #[tokio::test]
-    async fn test_validating_stop() {
-        let mut pipeline = BasePipeline::new()
-            .send(Box::new("world".to_string()) as Box<dyn Any + Send + Sync>)
-            .through(Box::new(ValidatingStop))
-            .build();
+    async fn test_validating_pipeline() {
+        let mut pipeline = BasePipeline::new();
+        pipeline.add_stop(Arc::new(ValidatingStop));
 
-        let result = pipeline.run_with_callback(Box::new(|t| Box::pin(async move { t }))).await;
+        pipeline.send(Box::new("test".to_string()) as Box<dyn Any + Send + Sync>);
+
+        let result = pipeline.process().await;
         let string = result.downcast::<String>().expect("Expected String");
-        assert_eq!(*string, "world");
+        assert_eq!(*string, "test");
     }
 
     #[tokio::test]
-    async fn test_method_aware_stop() {
-        let mut pipeline = BasePipeline::new()
-            .send(Box::new("world".to_string()) as Box<dyn Any + Send + Sync>)
-            .through(Box::new(MethodAwareStop { method: "GET".to_string() }))
-            .build();
+    #[should_panic(expected = "Empty string not allowed")]
+    async fn test_validating_pipeline_empty_string() {
+        let mut pipeline = BasePipeline::new();
+        pipeline.add_stop(Arc::new(ValidatingStop));
 
-        let result = pipeline.run_with_callback(Box::new(|t| Box::pin(async move { t }))).await;
+        pipeline.send(Box::new("".to_string()) as Box<dyn Any + Send + Sync>);
+
+        let _ = pipeline.process().await;
+    }
+
+    #[tokio::test]
+    async fn test_method_aware_pipeline() {
+        let mut pipeline = BasePipeline::new();
+        pipeline.add_stop(Arc::new(MethodAwareStop { method: "GET".to_string() }));
+
+        pipeline.send(Box::new("/users".to_string()) as Box<dyn Any + Send + Sync>);
+
+        let result = pipeline.process().await;
         let string = result.downcast::<String>().expect("Expected String");
-        assert_eq!(*string, "GET world");
+        assert_eq!(*string, "GET /users");
     }
 }

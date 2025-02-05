@@ -42,8 +42,7 @@ pub trait PipelineStop<T: Send + Sync>: Send + Sync {
 }
 
 /// A hub that can route objects through different pipelines
-#[async_trait]
 pub trait Hub: Send + Sync {
     /// Send an object through one of the available pipelines
-    async fn pipe<T: 'static + Send + Sync>(&mut self, object: T, pipeline: Option<&str>) -> T;
+    fn pipe<T: 'static + Send + Sync>(&mut self, object: T, pipeline: Option<&str>) -> impl Future<Output = T> + Send;
 }

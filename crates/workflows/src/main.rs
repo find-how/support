@@ -139,6 +139,10 @@ impl MetricsController {
             recorder: Arc::new(recorder),
         })
     }
+
+    pub fn record_workflow_duration(&self, workflow_type: &str, duration: Duration) {
+        metrics::histogram!("workflow_duration_seconds", duration.as_secs_f64(), "type" => workflow_type.to_string());
+    }
 }
 
 // ------------------------ CLI Implementation ------------------------

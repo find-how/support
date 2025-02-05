@@ -17,6 +17,21 @@ pub enum Error {
 
     #[error("Custom error: {0}")]
     Custom(String),
+
+    #[error("Key not found: {0:?}")]
+    KeyNotFound(Vec<u8>),
+
+    #[error("Invalid key: {0}")]
+    InvalidKey(String),
+
+    #[error("Invalid value: {0}")]
+    InvalidValue(String),
+
+    #[error("Batch operation failed: {0}")]
+    BatchError(String),
+
+    #[error("Store error: {0}")]
+    Other(String),
 }
 
 impl Error {

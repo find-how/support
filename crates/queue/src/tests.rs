@@ -91,7 +91,7 @@ async fn test_job_tags() -> Result<()> {
 
 #[tokio::test]
 async fn test_retry_with_backoff() -> Result<()> {
-    let mut queue = SledQueueImpl::new("test".to_string(), "test.db".to_string())?;
+    let queue = SledQueueImpl::new("test".to_string(), "test.db".to_string())?;
     queue.clear().await?;
 
     let job_id = "test_job".to_string();
