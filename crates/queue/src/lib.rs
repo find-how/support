@@ -178,31 +178,30 @@ impl Queue for SledQueueImpl {
             return Ok(None);
         }
 
-        // Get next available job
+        // Get all available jobs and sort by priority
         let now = Utc::now();
-        let mut job_index = None;
-        let mut job = None;
+        let mut available_jobs = Vec::new();
 
         for (i, job_id) in queue.iter().enumerate() {
             let job_key = self.job_key(job_id);
             if let Some(job_data) = self.db.get(&job_key)? {
-                let mut job_item: Job = bincode::deserialize(&job_data)?;
+                let job_item: Job = bincode::deserialize(&job_data)?;
                 if job_item.available_at <= now {
-                    job_item.reserved_at = Some(now);
-                    job = Some(job_item);
-                    job_index = Some(i);
-                    break;
+                    available_jobs.push((i, job_item));
                 }
             }
         }
 
-        if let Some(job) = job {
-            if let Some(index) = job_index {
-                queue.remove(index);
-                self.db.insert(queue_key, bincode::serialize(&queue)?)?;
-                self.db.flush()?;
-                return Ok(Some(Box::new(job) as Box<dyn JobHandler>));
-            }
+        // Sort by priority (higher priority first)
+        available_jobs.sort_by(|a, b| b.1.priority.cmp(&a.1.priority));
+
+        if let Some((index, job)) = available_jobs.into_iter().next() {
+            let mut job = job;
+            job.reserved_at = Some(now);
+            queue.remove(index);
+            self.db.insert(queue_key, bincode::serialize(&queue)?)?;
+            self.db.flush()?;
+            return Ok(Some(Box::new(job) as Box<dyn JobHandler>));
         }
 
         Ok(None)
@@ -220,8 +219,21 @@ impl Queue for SledQueueImpl {
     }
 
     async fn clear(&self) -> Result<()> {
+        // Clear main queue
         let queue_key = self.queue_key();
         self.db.remove(queue_key)?;
+
+        // Clear all tag indices
+        let tag_prefix = format!("{}:tag:", self.name);
+        let tag_keys: Vec<_> = self.db
+            .scan_prefix(tag_prefix.as_bytes())
+            .keys()
+            .collect();
+
+        for key in tag_keys {
+            self.db.remove(key?)?;
+        }
+
         self.db.flush()?;
         Ok(())
     }
@@ -247,8 +259,43 @@ impl Queue for SledQueueImpl {
     }
 
     async fn fail(&self, job_id: &str, error: String) -> Result<()> {
+        let job_key = self.job_key(job_id);
+
+        // Get the job data
+        let mut job: Job = if let Some(job_data) = self.db.get(&job_key)? {
+            bincode::deserialize(&job_data)?
+        } else {
+            return Err(Error::Job("Job not found".into()));
+        };
+
+        // Increment attempts and calculate backoff
+        job.attempts += 1;
+
+        if job.attempts < job.max_attempts {
+            // Calculate exponential backoff: 2^attempts seconds
+            let delay = StdDuration::from_secs(2u64.pow(job.attempts));
+            job.available_at = Utc::now() + chrono::Duration::from_std(delay).unwrap();
+
+            // Update job data
+            self.db.insert(&job_key, bincode::serialize(&job)?)?;
+
+            // Add back to queue
+            let queue_key = self.queue_key();
+            let mut queue: Vec<String> = self.db
+                .get(&queue_key)?
+                .map(|data| bincode::deserialize(&data))
+                .transpose()?
+                .unwrap_or_default();
+
+            queue.push(job.id.clone());
+            self.db.insert(queue_key, bincode::serialize(&queue)?)?;
+        }
+
+        // Record the failure
         let mut failed_jobs = self.failed_jobs.lock().await;
         failed_jobs.insert(job_id.to_string(), (error, Utc::now()));
+
+        self.db.flush()?;
         Ok(())
     }
 

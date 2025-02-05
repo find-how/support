@@ -61,9 +61,23 @@ pub struct Crypt {
 impl Crypt {
     pub fn initialize() -> Result<(), Error> {
         let key = env::var("APP_KEY").map_err(|_| Error::Environment("APP_KEY not set".into()))?;
-        if key.len() != 44 {
-            return Err(Error::Key("Invalid key length".into()));
+
+        // Handle base64: prefix
+        let key_data = if key.starts_with("base64:") {
+            key[7..].to_string()
+        } else {
+            key
+        };
+
+        // Check the actual base64 data length
+        if key_data.len() != 44 {
+            return Err(Error::Key(format!("Invalid key length: {}. Expected 44 characters after base64: prefix", key_data.len())));
         }
+
+        // Validate that it's valid base64
+        BASE64.decode(&key_data)
+            .map_err(|_| Error::Key("Invalid base64 encoding".into()))?;
+
         Ok(())
     }
 
@@ -108,7 +122,15 @@ impl Crypt {
 
     pub fn encrypt_string(value: &str) -> Result<String, Error> {
         let key = env::var("APP_KEY").map_err(|_| Error::Environment("APP_KEY not set".into()))?;
-        let key = BASE64.decode(key).map_err(|_| Error::Key("Invalid key format".into()))?;
+
+        // Handle base64: prefix
+        let key_data = if key.starts_with("base64:") {
+            key[7..].to_string()
+        } else {
+            key
+        };
+
+        let key = BASE64.decode(&key_data).map_err(|_| Error::Key("Invalid key format".into()))?;
         let mut key_bytes = [0u8; 32];
         key_bytes.copy_from_slice(&key);
 
@@ -127,7 +149,15 @@ impl Crypt {
 
     pub fn decrypt_string(value: &str) -> Result<String, Error> {
         let key = env::var("APP_KEY").map_err(|_| Error::Environment("APP_KEY not set".into()))?;
-        let key = BASE64.decode(key).map_err(|_| Error::Key("Invalid key format".into()))?;
+
+        // Handle base64: prefix
+        let key_data = if key.starts_with("base64:") {
+            key[7..].to_string()
+        } else {
+            key
+        };
+
+        let key = BASE64.decode(&key_data).map_err(|_| Error::Key("Invalid key format".into()))?;
         let mut key_bytes = [0u8; 32];
         key_bytes.copy_from_slice(&key);
 
